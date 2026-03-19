@@ -27,6 +27,19 @@ textarea { resize: vertical; }
 label { display: block; color: var(--muted); font-size: 0.86rem; margin-bottom: 0.35rem; }
 a { color: inherit; }
 
+.search-select {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.select-filter-input {
+  background: #141620;
+}
+
+.select-filter-input::placeholder {
+  color: #7f8596;
+}
+
 .shell {
   display: grid;
   grid-template-columns: 290px 1fr;

@@ -352,7 +352,7 @@ const App = {
         <article class="card">
           <div class="card-head"><h3>${this.state.editing.motorcycleId ? 'Editar moto' : 'Nova moto'}</h3></div>
           <form id="motorcycleForm" class="form-grid">
-            <div class="field"><label>Cliente</label><select name="client_id">${this.clientOptions()}</select></div>
+            ${this.clientSelectField({ selectId: 'motorcycleClientSelect' })}
             <div class="field"><label>Marca</label><input name="brand" required></div>
             <div class="field"><label>Modelo</label><input name="model" required></div>
             <div class="field"><label>Ano</label><input name="year"></div>
@@ -430,7 +430,7 @@ const App = {
         <article class="card">
           <div class="card-head"><h3>${this.state.editing.budgetId ? 'Editar orçamento' : 'Novo orçamento'}</h3></div>
           <form id="budgetForm" class="form-grid">
-            <div class="field"><label>Cliente</label><select name="client_id">${this.clientOptions()}</select></div>
+            ${this.clientSelectField({ selectId: 'budgetClientSelect' })}
             <div class="field"><label>Moto</label><select name="motorcycle_id">${this.motorcycleOptions()}</select></div>
             <div class="field"><label>Data</label><input name="budget_date" type="date" value="${this.today()}"></div>
             <div class="field"><label>Validade</label><input name="valid_until" type="date"></div>
@@ -480,7 +480,7 @@ const App = {
         <article class="card">
           <div class="card-head"><h3>${this.state.editing.orderId ? 'Editar OS' : 'Nova OS'}</h3></div>
           <form id="orderForm" class="form-grid">
-            <div class="field"><label>Cliente</label><select name="client_id">${this.clientOptions()}</select></div>
+            ${this.clientSelectField({ selectId: 'orderClientSelect' })}
             <div class="field"><label>Moto</label><select name="motorcycle_id">${this.motorcycleOptions()}</select></div>
             <div class="field"><label>Orçamento vinculado</label><select name="budget_id">${this.budgetOptions()}</select></div>
             <div class="field"><label>Data</label><input name="service_date" type="date" value="${this.today()}"></div>
@@ -528,7 +528,7 @@ const App = {
         <article class="card">
           <div class="card-head"><h3>Nova venda</h3></div>
           <form id="saleForm" class="form-grid">
-            <div class="field"><label>Cliente</label><select name="client_id">${this.clientOptions(true)}</select></div>
+            ${this.clientSelectField({ includeEmpty: true, selectId: 'saleClientSelect' })}
             <div class="field"><label>Data</label><input name="sale_date" type="date" value="${this.today()}"></div>
             <div class="field"><label>Pagamento</label>
               <select name="payment_method">
@@ -566,7 +566,7 @@ const App = {
         <article class="card">
           <div class="card-head"><h3>Novo recibo</h3></div>
           <form id="receiptForm" class="form-grid">
-            <div class="field"><label>Cliente</label><select name="client_id">${this.clientOptions(true)}</select></div>
+            ${this.clientSelectField({ includeEmpty: true, selectId: 'receiptClientSelect' })}
             <div class="field"><label>Data</label><input name="receipt_date" type="date" value="${this.today()}"></div>
             <div class="field"><label>Valor</label><input name="amount" type="number" step="0.01"></div>
             <div class="field"><label>Pagamento</label><select name="payment_method"><option>Pix</option><option>Dinheiro</option><option>Cartão</option></select></div>
@@ -939,6 +939,8 @@ const App = {
         });
       });
     }
+
+    this.bindSearchableSelects(document.getElementById('view'));
   },
 
   bindListActions(actions) {
@@ -947,6 +949,59 @@ const App = {
       if (!button) return;
       const action = actions[button.dataset.action];
       if (action) await action(button.dataset.id);
+    });
+  },
+
+  bindSearchableSelects(root = document) {
+    root.querySelectorAll('.select-filter-input[data-filter-target]').forEach((input) => {
+      const select = root.querySelector(`#${input.dataset.filterTarget}`);
+      if (!select) return;
+
+      if (!select._allOptions) {
+        select._allOptions = [...select.options].map((option, index) => ({
+          value: option.value,
+          text: option.textContent,
+          isPlaceholder: index === 0,
+        }));
+      }
+
+      const renderOptions = (query = '') => {
+        const currentValue = select.value;
+        const normalized = this.normalizeText(query);
+        const filtered = select._allOptions.filter((option) => option.isPlaceholder || !normalized || this.normalizeText(option.text).includes(normalized));
+
+        select.innerHTML = filtered.map((option) => `<option value="${this.escape(option.value)}">${this.escape(option.text)}</option>`).join('');
+        const hasCurrent = filtered.some((option) => String(option.value) === String(currentValue));
+        select.value = hasCurrent ? currentValue : '';
+      };
+
+      const syncInput = () => {
+        const selected = select.selectedOptions[0];
+        input.value = select.value && selected ? selected.textContent : '';
+      };
+
+      renderOptions(input.value);
+      syncInput();
+
+      input.addEventListener('input', () => {
+        renderOptions(input.value);
+      });
+
+      input.addEventListener('focus', () => {
+        if (!input.value) renderOptions('');
+      });
+
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          input.value = '';
+          renderOptions('');
+          select.value = '';
+        }
+      });
+
+      select.addEventListener('change', () => {
+        syncInput();
+      });
     });
   },
 
@@ -963,6 +1018,14 @@ const App = {
 
   resetEditing(key) {
     this.state.editing[key] = null;
+  },
+
+  normalizeText(value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .trim();
   },
 
   async safeAction(fn) {
@@ -984,6 +1047,24 @@ const App = {
 
   clientOptions(includeEmpty = false) {
     return `${includeEmpty ? '<option value="">Consumidor / sem cliente</option>' : '<option value="">Selecione</option>'}${this.state.clients.map((item) => `<option value="${item.id}">${this.escape(item.name)}</option>`).join('')}`;
+  },
+
+  clientSelectField({ includeEmpty = false, selectId = 'clientSelect' } = {}) {
+    return `
+      <div class="field">
+        <label>Cliente</label>
+        <div class="search-select">
+          <input
+            type="search"
+            class="select-filter-input"
+            data-filter-target="${selectId}"
+            placeholder="Buscar cliente por nome"
+            autocomplete="off"
+          >
+          <select id="${selectId}" name="client_id">${this.clientOptions(includeEmpty)}</select>
+        </div>
+      </div>
+    `;
   },
 
   motorcycleOptions() {
