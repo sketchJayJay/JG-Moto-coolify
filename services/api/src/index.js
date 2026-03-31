@@ -4,6 +4,8 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const morgan = require('morgan');
+const https = require('https');
+const axios = require('axios');
 const { pool, bootstrap } = require('./db');
 const { authRequired } = require('./auth');
 const {
@@ -187,6 +189,7 @@ async function emitFiscalDocument(docRow, certRow) {
     throw error;
   }
 
+  const emitPath = process.env.NFSE_API_EMIT_PATH || '/emit';
   const providerPayload = {
     environment: certRow.environment || 'homologacao',
     provider_name: certRow.provider_name || '',
@@ -196,33 +199,60 @@ async function emitFiscalDocument(docRow, certRow) {
     payload,
   };
 
-  const response = await fetch(`${String(apiBaseUrl).replace(/\/$/, '')}/emit`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-JG-MOTOS-SOURCE': 'coolify-app' },
-    body: JSON.stringify(providerPayload),
-  });
+  try {
+    const password = decryptSecret(certRow.certificate_password_encrypted);
+    const pfxBuffer = await readStoredCertificate(certRow.certificate_path);
+    const httpsAgent = new https.Agent({
+      pfx: pfxBuffer,
+      passphrase: password,
+      rejectUnauthorized: true,
+    });
 
-  const rawText = await response.text();
-  const parsed = safeJsonParse(rawText, { raw: rawText });
+    const url = `${String(apiBaseUrl).replace(/\/$/, '')}${String(emitPath).startsWith('/') ? emitPath : `/${emitPath}`}`;
+    const response = await axios.post(url, providerPayload, {
+      httpsAgent,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-JG-MOTOS-SOURCE': 'coolify-app',
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
 
-  if (!response.ok) {
-    const msg = parsed.message || parsed.error || `Falha ao emitir NFS-e (${response.status}).`;
+    const parsed = typeof response.data === 'string'
+      ? safeJsonParse(response.data, { raw: response.data })
+      : (response.data || {});
+
+    if (response.status < 200 || response.status >= 300) {
+      const msg = parsed.message || parsed.error || `Falha ao emitir NFS-e (${response.status}).`;
+      const error = new Error(msg);
+      error.statusCode = response.status;
+      error.providerResponse = parsed;
+      throw error;
+    }
+
+    return {
+      status: parsed.status || 'Autorizada',
+      nfse_number: parsed.nfse_number || parsed.numero || '',
+      access_key: parsed.access_key || parsed.chave || '',
+      protocol: parsed.protocol || parsed.protocolo || '',
+      xml_content: parsed.xml_content || parsed.xml || '',
+      pdf_url: parsed.pdf_url || parsed.pdf || '',
+      provider_response: JSON.stringify(parsed),
+      emitted_at: new Date().toISOString(),
+    };
+  } catch (err) {
+    const status = err.response?.status || err.statusCode || 500;
+    const data = err.response?.data || err.providerResponse || null;
+    const parsedData = typeof data === 'string' ? safeJsonParse(data, { raw: data }) : data;
+    const msg = parsedData?.message || parsedData?.error || err.message || `Falha ao emitir NFS-e (${status}).`;
     const error = new Error(msg);
-    error.statusCode = response.status;
-    error.providerResponse = parsed;
+    error.statusCode = status;
+    error.providerResponse = parsedData;
     throw error;
   }
-
-  return {
-    status: parsed.status || 'Autorizada',
-    nfse_number: parsed.nfse_number || parsed.numero || '',
-    access_key: parsed.access_key || parsed.chave || '',
-    protocol: parsed.protocol || parsed.protocolo || '',
-    xml_content: parsed.xml_content || parsed.xml || '',
-    pdf_url: parsed.pdf_url || parsed.pdf || '',
-    provider_response: JSON.stringify(parsed),
-    emitted_at: new Date().toISOString(),
-  };
 }
 
 function requireConfiguredCertificate(row) {
