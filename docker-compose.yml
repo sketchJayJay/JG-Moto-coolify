@@ -28,9 +28,13 @@ services:
       ADMIN_NAME: ${ADMIN_NAME:-Administrador JG}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@jgmotos.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
+      CERT_STORAGE_DIR: ${CERT_STORAGE_DIR:-/data/certs}
+      CERT_SECRET: ${CERT_SECRET:-troque-por-uma-chave-fiscal}
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - certs_data:/data/certs
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
       interval: 15s
@@ -51,3 +55,4 @@ services:
 
 volumes:
   postgres_data:
+  certs_data:

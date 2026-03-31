@@ -168,6 +168,24 @@ CREATE TABLE IF NOT EXISTS fiscal_documents (
   notes TEXT DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS fiscal_certificate_settings (
+  id SERIAL PRIMARY KEY,
+  provider_name TEXT DEFAULT '',
+  environment TEXT NOT NULL DEFAULT 'homologacao',
+  certificate_filename TEXT DEFAULT '',
+  certificate_path TEXT DEFAULT '',
+  certificate_password_encrypted TEXT DEFAULT '',
+  subject_name TEXT DEFAULT '',
+  issuer_name TEXT DEFAULT '',
+  document_number TEXT DEFAULT '',
+  valid_from DATE,
+  valid_until DATE,
+  last_tested_at TIMESTAMPTZ,
+  is_configured BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `;
 
 async function waitForDb(retries = 20, delayMs = 3000) {
@@ -192,6 +210,14 @@ async function bootstrap() {
     await pool.query(
       `INSERT INTO company_settings (name, notes, responsible) VALUES ($1, $2, $3)`,
       ['JG MOTOS', 'Sistema V2 com API e banco PostgreSQL.', 'JG MOTOS']
+    );
+  }
+
+  const fiscalCertCheck = await pool.query('SELECT id FROM fiscal_certificate_settings LIMIT 1');
+  if (fiscalCertCheck.rowCount === 0) {
+    await pool.query(
+      `INSERT INTO fiscal_certificate_settings (provider_name, environment, is_configured) VALUES ($1, $2, $3)`,
+      ['', 'homologacao', false]
     );
   }
 

@@ -6,6 +6,16 @@ const jwt = require('jsonwebtoken');
 const morgan = require('morgan');
 const { pool, bootstrap } = require('./db');
 const { authRequired } = require('./auth');
+const {
+  ensureCertStorage,
+  normalizeBase64,
+  parsePfxBuffer,
+  saveCertificateBuffer,
+  readStoredCertificate,
+  deleteStoredCertificate,
+  encryptSecret,
+  decryptSecret,
+} = require('./fiscalCert');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -53,6 +63,70 @@ async function getFullBudget(id) {
   const itemsQuery = await pool.query('SELECT * FROM budget_items WHERE budget_id = $1 ORDER BY id ASC', [id]);
   return { ...budgetQuery.rows[0], items: itemsQuery.rows };
 }
+
+function sanitizeFiscalCertificate(row) {
+  if (!row) {
+    return {
+      provider_name: '',
+      environment: 'homologacao',
+      is_configured: false,
+      certificate_filename: '',
+      subject_name: '',
+      issuer_name: '',
+      document_number: '',
+      valid_from: null,
+      valid_until: null,
+      last_tested_at: null,
+      has_password: false,
+    };
+  }
+
+  return {
+    id: row.id,
+    provider_name: row.provider_name || '',
+    environment: row.environment || 'homologacao',
+    is_configured: Boolean(row.is_configured),
+    certificate_filename: row.certificate_filename || '',
+    certificate_path: row.certificate_path || '',
+    subject_name: row.subject_name || '',
+    issuer_name: row.issuer_name || '',
+    document_number: row.document_number || '',
+    valid_from: row.valid_from || null,
+    valid_until: row.valid_until || null,
+    last_tested_at: row.last_tested_at || null,
+    has_password: Boolean(row.certificate_password_encrypted),
+  };
+}
+
+async function getFiscalCertificateRow() {
+  const result = await pool.query('SELECT * FROM fiscal_certificate_settings ORDER BY id ASC LIMIT 1');
+  return result.rows[0] || null;
+}
+
+function requireConfiguredCertificate(row) {
+  if (!row || !row.is_configured || !row.certificate_path || !row.certificate_password_encrypted) {
+    const error = new Error('Nenhum certificado fiscal configurado.');
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+async function testStoredFiscalCertificate(row) {
+  requireConfiguredCertificate(row);
+  const password = decryptSecret(row.certificate_password_encrypted);
+  const buffer = await readStoredCertificate(row.certificate_path);
+  const parsed = parsePfxBuffer(buffer, password);
+  const update = await pool.query(
+    `UPDATE fiscal_certificate_settings
+     SET subject_name = $1, issuer_name = $2, document_number = $3,
+         valid_from = $4, valid_until = $5, last_tested_at = NOW(), updated_at = NOW(), is_configured = TRUE
+     WHERE id = $6
+     RETURNING *`,
+    [parsed.subject, parsed.issuer, parsed.document, parsed.validFrom, parsed.validUntil, row.id]
+  );
+  return { row: update.rows[0], parsed };
+}
+
 
 app.get('/api/health', async (_req, res) => {
   const db = await pool.query('SELECT NOW() as now');
@@ -537,6 +611,114 @@ app.delete('/api/finance/:id', authRequired, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/fiscal/certificate', authRequired, async (_req, res) => {
+  const row = await getFiscalCertificateRow();
+  res.json(sanitizeFiscalCertificate(row));
+});
+
+app.put('/api/fiscal/certificate', authRequired, async (req, res) => {
+  await ensureCertStorage();
+  const row = await getFiscalCertificateRow();
+  if (!row) return res.status(500).json({ message: 'Configuração fiscal não encontrada.' });
+
+  const { provider_name, environment, certificate_filename, certificate_base64, certificate_password } = req.body || {};
+  const cleanProvider = String(provider_name || '').trim();
+  const cleanEnvironment = String(environment || row.environment || 'homologacao').trim() || 'homologacao';
+  const hasNewFile = Boolean(String(certificate_base64 || '').trim());
+  const hasNewPassword = typeof certificate_password === 'string' && certificate_password.length > 0;
+
+  let filePath = row.certificate_path || '';
+  let fileName = row.certificate_filename || '';
+  let encryptedPassword = row.certificate_password_encrypted || '';
+  let parsed = null;
+
+  if (hasNewFile) {
+    if (!hasNewPassword) {
+      return res.status(400).json({ message: 'Informe a senha do certificado para importar o arquivo.' });
+    }
+
+    const raw = normalizeBase64(certificate_base64);
+    const buffer = Buffer.from(raw, 'base64');
+    parsed = parsePfxBuffer(buffer, certificate_password);
+    const saved = await saveCertificateBuffer(certificate_filename || 'certificado.pfx', buffer);
+    if (row.certificate_path && row.certificate_path !== saved.fullPath) {
+      await deleteStoredCertificate(row.certificate_path);
+    }
+    filePath = saved.fullPath;
+    fileName = certificate_filename || saved.storedName;
+    encryptedPassword = encryptSecret(certificate_password);
+  } else if (hasNewPassword) {
+    if (!row.certificate_path) {
+      return res.status(400).json({ message: 'Envie o arquivo .pfx ou .p12 junto da senha na primeira configuração.' });
+    }
+    const buffer = await readStoredCertificate(row.certificate_path);
+    parsed = parsePfxBuffer(buffer, certificate_password);
+    encryptedPassword = encryptSecret(certificate_password);
+    filePath = row.certificate_path;
+    fileName = row.certificate_filename || certificate_filename || '';
+  }
+
+  const result = await pool.query(
+    `UPDATE fiscal_certificate_settings
+     SET provider_name = $1, environment = $2, certificate_filename = $3, certificate_path = $4,
+         certificate_password_encrypted = $5, subject_name = $6, issuer_name = $7, document_number = $8,
+         valid_from = $9, valid_until = $10, is_configured = $11, updated_at = NOW(),
+         last_tested_at = CASE WHEN $12 THEN NOW() ELSE last_tested_at END
+     WHERE id = $13
+     RETURNING *`,
+    [
+      cleanProvider,
+      cleanEnvironment,
+      fileName,
+      filePath,
+      encryptedPassword,
+      parsed?.subject || row.subject_name || '',
+      parsed?.issuer || row.issuer_name || '',
+      parsed?.document || row.document_number || '',
+      parsed?.validFrom || row.valid_from || null,
+      parsed?.validUntil || row.valid_until || null,
+      Boolean(filePath && encryptedPassword),
+      Boolean(parsed),
+      row.id,
+    ]
+  );
+
+  res.json({
+    message: parsed ? 'Certificado salvo e validado com sucesso.' : 'Configuração fiscal atualizada com sucesso.',
+    certificate: sanitizeFiscalCertificate(result.rows[0]),
+  });
+});
+
+app.post('/api/fiscal/certificate/test', authRequired, async (_req, res) => {
+  const row = await getFiscalCertificateRow();
+  const { row: updated, parsed } = await testStoredFiscalCertificate(row);
+  res.json({
+    ok: true,
+    message: 'Certificado lido com sucesso. Arquivo e senha estão funcionando.',
+    certificate: sanitizeFiscalCertificate(updated),
+    parsed,
+  });
+});
+
+app.delete('/api/fiscal/certificate', authRequired, async (_req, res) => {
+  const row = await getFiscalCertificateRow();
+  if (row?.certificate_path) {
+    await deleteStoredCertificate(row.certificate_path);
+  }
+
+  const result = await pool.query(
+    `UPDATE fiscal_certificate_settings
+     SET provider_name = '', environment = 'homologacao', certificate_filename = '', certificate_path = '',
+         certificate_password_encrypted = '', subject_name = '', issuer_name = '', document_number = '',
+         valid_from = NULL, valid_until = NULL, last_tested_at = NULL, is_configured = FALSE, updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [row?.id]
+  );
+
+  res.json({ ok: true, message: 'Certificado removido do sistema.', certificate: sanitizeFiscalCertificate(result.rows[0]) });
+});
+
 app.get('/api/fiscal-documents', authRequired, async (_req, res) => {
   const result = await pool.query('SELECT * FROM fiscal_documents ORDER BY id DESC');
   res.json(result.rows);
@@ -712,11 +894,12 @@ app.get('/api/reports/summary', authRequired, async (_req, res) => {
 
 app.use((error, _req, res, _next) => {
   console.error(error);
-  res.status(500).json({ message: 'Erro interno no servidor.', detail: error.message });
+  res.status(error.statusCode || 500).json({ message: error.publicMessage || error.message || 'Erro interno no servidor.', detail: error.message });
 });
 
 bootstrap()
-  .then(() => {
+  .then(async () => {
+    await ensureCertStorage();
     app.listen(port, () => {
       console.log(`JG MOTOS API rodando na porta ${port}`);
     });

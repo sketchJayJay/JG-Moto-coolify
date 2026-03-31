@@ -247,3 +247,28 @@ textarea[readonly] {
   opacity: 0.95;
   background: #0f1117;
 }
+
+.certificate-summary .row {
+  align-items: flex-start;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  border: 1px solid var(--line);
+}
+
+.status-pill.ok {
+  background: rgba(22, 163, 74, 0.16);
+  color: #b7f7c7;
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.status-pill.warn {
+  background: rgba(234, 179, 8, 0.12);
+  color: #f9dd8d;
+  border-color: rgba(234, 179, 8, 0.28);
+}

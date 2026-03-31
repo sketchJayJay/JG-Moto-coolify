@@ -13,6 +13,7 @@ const App = {
     receipts: [],
     finance: [],
     fiscal: [],
+    fiscalCertificate: null,
     reports: null,
     editing: {
       clientId: null,
@@ -185,7 +186,7 @@ const App = {
   },
 
   async loadAll() {
-    const [dashboard, company, clients, motorcycles, products, budgets, orders, sales, receipts, finance, fiscal, reports] = await Promise.all([
+    const [dashboard, company, clients, motorcycles, products, budgets, orders, sales, receipts, finance, fiscal, fiscalCertificate, reports] = await Promise.all([
       this.api('/dashboard'),
       this.api('/company'),
       this.api('/clients'),
@@ -197,10 +198,11 @@ const App = {
       this.api('/receipts'),
       this.api('/finance'),
       this.api('/fiscal-documents'),
+      this.api('/fiscal/certificate'),
       this.api('/reports/summary'),
     ]);
 
-    Object.assign(this.state, { dashboard, company, clients, motorcycles, products, budgets, orders, sales, receipts, finance, fiscal, reports });
+    Object.assign(this.state, { dashboard, company, clients, motorcycles, products, budgets, orders, sales, receipts, finance, fiscal, fiscalCertificate, reports });
     const active = document.querySelector('.nav-btn.active')?.dataset.section || 'dashboard';
     this.renderSection(active);
   },
@@ -629,69 +631,100 @@ const App = {
 
 
   fiscalTemplate() {
+    const cert = this.state.fiscalCertificate || {};
     const latestNfse = this.state.fiscal.find((item) => String(item.doc_type || '').toUpperCase().includes('NFS'));
     const latestData = latestNfse ? this.parseFiscalNotes(latestNfse) : {};
     const defaultCity = this.state.company?.city ? `${this.state.company.city}${this.state.company?.state ? ` - ${this.state.company.state}` : ''}` : 'Muriaé - MG';
     const defaultCode = latestData.service_code || '14.03.01';
+    const certStatus = cert.is_configured ? 'Configurado' : 'Pendente';
+    const envLabel = cert.environment === 'producao' ? 'Produção' : 'Homologação';
     return `
-      <div class="grid two">
+      <div class="grid">
         <article class="card glow">
-          <div class="card-head"><h3>Pré-nota de serviço</h3></div>
-          <p class="muted">Monte a NFS-e no sistema, copie os dados e finalize no portal. Ideal para oficina sem tropeço fiscal.</p>
-          <form id="fiscalForm" class="form-grid top-gap">
-            <div class="field">
-              <label>Ordem de serviço</label>
-              <select name="reference_id" id="fiscalOrderSelect">
-                <option value="">Sem vínculo</option>
-                ${this.state.orders.map((item) => `<option value="${item.id}">${this.escape(item.number)} • ${this.escape(item.client_name || 'Sem cliente')}</option>`).join('')}
-              </select>
-            </div>
-            ${this.clientSelectField({ includeEmpty: true, selectId: 'fiscalClientSelect' })}
-            <div class="field"><label>Data do serviço</label><input name="service_date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
-            <div class="field"><label>Valor do serviço</label><input name="service_value" type="number" step="0.01" min="0" placeholder="0,00"></div>
-            <div class="field"><label>Código do serviço</label><input name="service_code" value="${this.escape(defaultCode)}"></div>
-            <div class="field"><label>Município da prestação</label><input name="service_city" value="${this.escape(defaultCity)}"></div>
-            <div class="field full"><label>Descrição do serviço</label><textarea name="service_description" rows="4" placeholder="Ex.: revisão, troca de pneus, mão de obra, peças cobradas no serviço"></textarea></div>
-            <div class="field"><label>Tomador / cliente</label><input name="customer_name" placeholder="Nome ou razão social"></div>
-            <div class="field"><label>CPF/CNPJ do cliente</label><input name="customer_document" placeholder="CPF ou CNPJ"></div>
-            <div class="field"><label>E-mail do cliente</label><input name="customer_email" type="email" placeholder="email@cliente.com"></div>
-            <div class="field"><label>Status</label><select name="status"><option>Pendente de emissão</option><option>Pronta para emitir</option><option>Emitida no portal</option></select></div>
-            <div class="field full"><label>Endereço do cliente</label><textarea name="customer_address" rows="2" placeholder="Endereço completo do tomador"></textarea></div>
-            <div class="field full"><label>Observações para a nota</label><textarea name="notes" rows="3" placeholder="Informações extras, garantia, forma de cobrança, etc."></textarea></div>
-            <div class="field full">
-              <label>Texto pronto para copiar no portal</label>
-              <textarea id="fiscalPreview" rows="10" readonly placeholder="A pré-nota vai aparecer aqui."></textarea>
-            </div>
+          <div class="card-head"><h3>Certificado digital A1</h3></div>
+          <p class="muted">Suba o arquivo .pfx ou .p12, informe a senha e deixe a leitura do certificado pronta dentro do sistema. A emissão automática ainda depende da integração com a prefeitura ou provedor fiscal.</p>
+          <div class="summary-box top-gap certificate-summary">
+            <div class="row"><span>Status</span><b class="status-pill ${cert.is_configured ? 'ok' : 'warn'}">${this.escape(certStatus)}</b></div>
+            <div class="row"><span>Ambiente</span><b>${this.escape(envLabel)}</b></div>
+            <div class="row"><span>Arquivo</span><b>${this.escape(cert.certificate_filename || '-')}</b></div>
+            <div class="row"><span>Titular</span><b>${this.escape(cert.subject_name || '-')}</b></div>
+            <div class="row"><span>Documento</span><b>${this.escape(cert.document_number || '-')}</b></div>
+            <div class="row"><span>Emissor</span><b>${this.escape(cert.issuer_name || '-')}</b></div>
+            <div class="row"><span>Validade</span><b>${cert.valid_until ? this.date(cert.valid_until) : '-'}</b></div>
+            <div class="row"><span>Último teste</span><b>${cert.last_tested_at ? new Date(cert.last_tested_at).toLocaleString('pt-BR') : '-'}</b></div>
+          </div>
+          <form id="fiscalCertForm" class="form-grid top-gap">
+            <div class="field"><label>Provedor / prefeitura</label><input name="provider_name" value="${this.escape(cert.provider_name || '')}" placeholder="Ex.: Portal Nacional NFS-e, prefeitura, provedor"></div>
+            <div class="field"><label>Ambiente</label><select name="environment"><option value="homologacao" ${cert.environment !== 'producao' ? 'selected' : ''}>Homologação</option><option value="producao" ${cert.environment === 'producao' ? 'selected' : ''}>Produção</option></select></div>
+            <div class="field full"><label>Arquivo do certificado (.pfx ou .p12)</label><input name="certificate_file" type="file" accept=".pfx,.p12,application/x-pkcs12"></div>
+            <div class="field"><label>Senha do certificado</label><input name="certificate_password" type="password" placeholder="Digite para salvar ou trocar"></div>
+            <div class="field"><label>Armazenamento</label><input value="Protegido no servidor /data/certs" readonly></div>
             <div class="actions full">
-              <button class="primary-btn">Salvar pré-nota</button>
-              <button type="button" class="secondary-btn" id="copyFiscalPreviewBtn">Copiar texto</button>
-              <button type="button" class="ghost-btn" id="clearFiscalBtn">Limpar</button>
+              <button class="primary-btn">Salvar certificado</button>
+              <button type="button" class="secondary-btn" id="testFiscalCertBtn">Testar leitura</button>
+              <button type="button" class="ghost-btn danger" id="deleteFiscalCertBtn">Remover certificado</button>
             </div>
           </form>
         </article>
-        <article class="card">
-          <div class="card-head"><h3>Fila de pré-notas</h3></div>
-          <div class="stack cards-list">
-            ${this.state.fiscal.map((item) => {
-              const details = this.parseFiscalNotes(item);
-              const title = details.customer_name || details.service_description || item.doc_type;
-              const sub = [details.service_date ? this.date(details.service_date) : null, details.service_value ? this.money(details.service_value) : null, details.service_code || null].filter(Boolean).join(' • ');
-              return `
-                <div class="entity-card fiscal-card">
-                  <div>
-                    <b>${this.escape(item.doc_type)} • ${this.escape(title)}</b>
-                    <span>${this.escape(item.status)} • ${this.escape(item.reference_type || 'manual')}</span>
-                    <span>${this.escape(sub || (details.raw_notes || 'Sem detalhes.'))}</span>
+        <div class="grid two">
+          <article class="card glow">
+            <div class="card-head"><h3>Pré-nota de serviço</h3></div>
+            <p class="muted">Monte a NFS-e no sistema, copie os dados e finalize no portal. Ideal para oficina sem tropeço fiscal.</p>
+            <form id="fiscalForm" class="form-grid top-gap">
+              <div class="field">
+                <label>Ordem de serviço</label>
+                <select name="reference_id" id="fiscalOrderSelect">
+                  <option value="">Sem vínculo</option>
+                  ${this.state.orders.map((item) => `<option value="${item.id}">${this.escape(item.number)} • ${this.escape(item.client_name || 'Sem cliente')}</option>`).join('')}
+                </select>
+              </div>
+              ${this.clientSelectField({ includeEmpty: true, selectId: 'fiscalClientSelect' })}
+              <div class="field"><label>Data do serviço</label><input name="service_date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+              <div class="field"><label>Valor do serviço</label><input name="service_value" type="number" step="0.01" min="0" placeholder="0,00"></div>
+              <div class="field"><label>Código do serviço</label><input name="service_code" value="${this.escape(defaultCode)}"></div>
+              <div class="field"><label>Município da prestação</label><input name="service_city" value="${this.escape(defaultCity)}"></div>
+              <div class="field full"><label>Descrição do serviço</label><textarea name="service_description" rows="4" placeholder="Ex.: revisão, troca de pneus, mão de obra, peças cobradas no serviço"></textarea></div>
+              <div class="field"><label>Tomador / cliente</label><input name="customer_name" placeholder="Nome ou razão social"></div>
+              <div class="field"><label>CPF/CNPJ do cliente</label><input name="customer_document" placeholder="CPF ou CNPJ"></div>
+              <div class="field"><label>E-mail do cliente</label><input name="customer_email" type="email" placeholder="email@cliente.com"></div>
+              <div class="field"><label>Status</label><select name="status"><option>Pendente de emissão</option><option>Pronta para emitir</option><option>Emitida no portal</option></select></div>
+              <div class="field full"><label>Endereço do cliente</label><textarea name="customer_address" rows="2" placeholder="Endereço completo do tomador"></textarea></div>
+              <div class="field full"><label>Observações para a nota</label><textarea name="notes" rows="3" placeholder="Informações extras, garantia, forma de cobrança, etc."></textarea></div>
+              <div class="field full">
+                <label>Texto pronto para copiar no portal</label>
+                <textarea id="fiscalPreview" rows="10" readonly placeholder="A pré-nota vai aparecer aqui."></textarea>
+              </div>
+              <div class="actions full">
+                <button class="primary-btn">Salvar pré-nota</button>
+                <button type="button" class="secondary-btn" id="copyFiscalPreviewBtn">Copiar texto</button>
+                <button type="button" class="ghost-btn" id="clearFiscalBtn">Limpar</button>
+              </div>
+            </form>
+          </article>
+          <article class="card">
+            <div class="card-head"><h3>Fila de pré-notas</h3></div>
+            <div class="stack cards-list">
+              ${this.state.fiscal.map((item) => {
+                const details = this.parseFiscalNotes(item);
+                const title = details.customer_name || details.service_description || item.doc_type;
+                const sub = [details.service_date ? this.date(details.service_date) : null, details.service_value ? this.money(details.service_value) : null, details.service_code || null].filter(Boolean).join(' • ');
+                return `
+                  <div class="entity-card fiscal-card">
+                    <div>
+                      <b>${this.escape(item.doc_type)} • ${this.escape(title)}</b>
+                      <span>${this.escape(item.status)} • ${this.escape(item.reference_type || 'manual')}</span>
+                      <span>${this.escape(sub || (details.raw_notes || 'Sem detalhes.'))}</span>
+                    </div>
+                    <div class="row-actions wrap">
+                      <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
+                      <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>
+                    </div>
                   </div>
-                  <div class="row-actions wrap">
-                    <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
-                    <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>
-                  </div>
-                </div>
-              `;
-            }).join('') || '<p class="muted">Sem pré-notas salvas.</p>'}
-          </div>
-        </article>
+                `;
+              }).join('') || '<p class="muted">Sem pré-notas salvas.</p>'}
+            </div>
+          </article>
+        </div>
       </div>
     `;
   },
@@ -937,6 +970,52 @@ const App = {
 
 
     if (section === 'fiscal') {
+      const certForm = document.getElementById('fiscalCertForm');
+      const testCertBtn = document.getElementById('testFiscalCertBtn');
+      const deleteCertBtn = document.getElementById('deleteFiscalCertBtn');
+
+      certForm?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const file = certForm.elements.certificate_file?.files?.[0] || null;
+        const password = String(certForm.elements.certificate_password?.value || '').trim();
+        await this.safeAction(async () => {
+          const body = {
+            provider_name: certForm.elements.provider_name?.value || '',
+            environment: certForm.elements.environment?.value || 'homologacao',
+          };
+          if (file) {
+            body.certificate_filename = file.name;
+            body.certificate_base64 = await this.fileToDataUrl(file);
+          }
+          if (password) {
+            body.certificate_password = password;
+          }
+          const response = await this.api('/fiscal/certificate', { method: 'PUT', body });
+          this.state.fiscalCertificate = response.certificate;
+          await this.loadAll();
+          this.toast(response.message || 'Certificado salvo com sucesso.');
+        });
+      });
+
+      testCertBtn?.addEventListener('click', async () => {
+        await this.safeAction(async () => {
+          const response = await this.api('/fiscal/certificate/test', { method: 'POST' });
+          this.state.fiscalCertificate = response.certificate;
+          await this.loadAll();
+          this.toast(response.message || 'Certificado testado com sucesso.');
+        });
+      });
+
+      deleteCertBtn?.addEventListener('click', async () => {
+        if (!confirm('Remover o certificado salvo do sistema?')) return;
+        await this.safeAction(async () => {
+          const response = await this.api('/fiscal/certificate', { method: 'DELETE' });
+          this.state.fiscalCertificate = response.certificate;
+          await this.loadAll();
+          this.toast(response.message || 'Certificado removido.');
+        });
+      });
+
       const form = document.getElementById('fiscalForm');
       const orderSelect = document.getElementById('fiscalOrderSelect');
       const clientSelect = document.getElementById('fiscalClientSelect');
@@ -1156,6 +1235,15 @@ const App = {
         filter.value = selected?.textContent || '';
       }
     }
+  },
+
+  fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Falha ao ler o arquivo do certificado.'));
+      reader.readAsDataURL(file);
+    });
   },
 
   async copyText(text) {
