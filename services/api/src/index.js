@@ -552,6 +552,12 @@ app.post('/api/fiscal-documents', authRequired, async (req, res) => {
   res.json(result.rows[0]);
 });
 
+
+app.delete('/api/fiscal-documents/:id', authRequired, async (req, res) => {
+  await pool.query('DELETE FROM fiscal_documents WHERE id = $1', [req.params.id]);
+  res.json({ ok: true });
+});
+
 app.get('/api/backup/export', authRequired, async (_req, res) => {
   const tables = ['company_settings', 'users', 'clients', 'motorcycles', 'products', 'budgets', 'budget_items', 'service_orders', 'sales', 'sale_items', 'receipts', 'finance_entries', 'fiscal_documents'];
   const payload = {};

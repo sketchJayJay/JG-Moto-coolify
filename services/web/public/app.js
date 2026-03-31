@@ -627,28 +627,69 @@ const App = {
     `;
   },
 
+
   fiscalTemplate() {
+    const latestNfse = this.state.fiscal.find((item) => String(item.doc_type || '').toUpperCase().includes('NFS'));
+    const latestData = latestNfse ? this.parseFiscalNotes(latestNfse) : {};
+    const defaultCity = this.state.company?.city ? `${this.state.company.city}${this.state.company?.state ? ` - ${this.state.company.state}` : ''}` : 'Muriaé - MG';
+    const defaultCode = latestData.service_code || '14.03.01';
     return `
       <div class="grid two">
         <article class="card glow">
-          <div class="card-head"><h3>Pré-integração fiscal</h3></div>
-          <p class="muted">Este módulo já organiza a fila interna para NF-e e NFS-e. A emissão oficial entra na próxima etapa, conectando certificado, prefeitura e/ou SEFAZ.</p>
+          <div class="card-head"><h3>Pré-nota de serviço</h3></div>
+          <p class="muted">Monte a NFS-e no sistema, copie os dados e finalize no portal. Ideal para oficina sem tropeço fiscal.</p>
           <form id="fiscalForm" class="form-grid top-gap">
-            <div class="field"><label>Tipo</label><select name="doc_type"><option>NFS-e</option><option>NF-e</option><option>NFC-e</option></select></div>
-            <div class="field"><label>Status</label><select name="status"><option>Pendente de integração</option><option>Aguardando certificado</option><option>Pronto para envio</option></select></div>
-            <div class="field"><label>Referência</label><select name="reference_type"><option>service_order</option><option>sale</option><option>manual</option></select></div>
-            <div class="field full"><label>Observações</label><textarea name="notes" rows="3"></textarea></div>
-            <div class="actions full"><button class="primary-btn">Adicionar na fila fiscal</button></div>
+            <div class="field">
+              <label>Ordem de serviço</label>
+              <select name="reference_id" id="fiscalOrderSelect">
+                <option value="">Sem vínculo</option>
+                ${this.state.orders.map((item) => `<option value="${item.id}">${this.escape(item.number)} • ${this.escape(item.client_name || 'Sem cliente')}</option>`).join('')}
+              </select>
+            </div>
+            ${this.clientSelectField({ includeEmpty: true, selectId: 'fiscalClientSelect' })}
+            <div class="field"><label>Data do serviço</label><input name="service_date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+            <div class="field"><label>Valor do serviço</label><input name="service_value" type="number" step="0.01" min="0" placeholder="0,00"></div>
+            <div class="field"><label>Código do serviço</label><input name="service_code" value="${this.escape(defaultCode)}"></div>
+            <div class="field"><label>Município da prestação</label><input name="service_city" value="${this.escape(defaultCity)}"></div>
+            <div class="field full"><label>Descrição do serviço</label><textarea name="service_description" rows="4" placeholder="Ex.: revisão, troca de pneus, mão de obra, peças cobradas no serviço"></textarea></div>
+            <div class="field"><label>Tomador / cliente</label><input name="customer_name" placeholder="Nome ou razão social"></div>
+            <div class="field"><label>CPF/CNPJ do cliente</label><input name="customer_document" placeholder="CPF ou CNPJ"></div>
+            <div class="field"><label>E-mail do cliente</label><input name="customer_email" type="email" placeholder="email@cliente.com"></div>
+            <div class="field"><label>Status</label><select name="status"><option>Pendente de emissão</option><option>Pronta para emitir</option><option>Emitida no portal</option></select></div>
+            <div class="field full"><label>Endereço do cliente</label><textarea name="customer_address" rows="2" placeholder="Endereço completo do tomador"></textarea></div>
+            <div class="field full"><label>Observações para a nota</label><textarea name="notes" rows="3" placeholder="Informações extras, garantia, forma de cobrança, etc."></textarea></div>
+            <div class="field full">
+              <label>Texto pronto para copiar no portal</label>
+              <textarea id="fiscalPreview" rows="10" readonly placeholder="A pré-nota vai aparecer aqui."></textarea>
+            </div>
+            <div class="actions full">
+              <button class="primary-btn">Salvar pré-nota</button>
+              <button type="button" class="secondary-btn" id="copyFiscalPreviewBtn">Copiar texto</button>
+              <button type="button" class="ghost-btn" id="clearFiscalBtn">Limpar</button>
+            </div>
           </form>
         </article>
         <article class="card">
-          <div class="card-head"><h3>Fila fiscal</h3></div>
+          <div class="card-head"><h3>Fila de pré-notas</h3></div>
           <div class="stack cards-list">
-            ${this.state.fiscal.map((item) => `
-              <div class="entity-card">
-                <div><b>${this.escape(item.doc_type)}</b><span>${this.escape(item.status)} • ${this.escape(item.reference_type || 'manual')}</span></div>
-              </div>
-            `).join('') || '<p class="muted">Sem documentos na fila.</p>'}
+            ${this.state.fiscal.map((item) => {
+              const details = this.parseFiscalNotes(item);
+              const title = details.customer_name || details.service_description || item.doc_type;
+              const sub = [details.service_date ? this.date(details.service_date) : null, details.service_value ? this.money(details.service_value) : null, details.service_code || null].filter(Boolean).join(' • ');
+              return `
+                <div class="entity-card fiscal-card">
+                  <div>
+                    <b>${this.escape(item.doc_type)} • ${this.escape(title)}</b>
+                    <span>${this.escape(item.status)} • ${this.escape(item.reference_type || 'manual')}</span>
+                    <span>${this.escape(sub || (details.raw_notes || 'Sem detalhes.'))}</span>
+                  </div>
+                  <div class="row-actions wrap">
+                    <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
+                    <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>
+                  </div>
+                </div>
+              `;
+            }).join('') || '<p class="muted">Sem pré-notas salvas.</p>'}
           </div>
         </article>
       </div>
@@ -894,16 +935,66 @@ const App = {
       });
     }
 
+
     if (section === 'fiscal') {
-      document.getElementById('fiscalForm').addEventListener('submit', async (event) => {
+      const form = document.getElementById('fiscalForm');
+      const orderSelect = document.getElementById('fiscalOrderSelect');
+      const clientSelect = document.getElementById('fiscalClientSelect');
+      const previewFields = ['service_date', 'service_value', 'service_code', 'service_city', 'service_description', 'customer_name', 'customer_document', 'customer_email', 'customer_address', 'notes'];
+
+      orderSelect?.addEventListener('change', () => {
+        this.prefillFiscalOrder(form, orderSelect.value);
+        this.syncFiscalPreview(form);
+      });
+
+      clientSelect?.addEventListener('change', () => {
+        this.prefillFiscalClient(form, clientSelect.value);
+        this.syncFiscalPreview(form);
+      });
+
+      previewFields.forEach((name) => {
+        form.elements[name]?.addEventListener('input', () => this.syncFiscalPreview(form));
+      });
+      form.elements.status?.addEventListener('change', () => this.syncFiscalPreview(form));
+
+      document.getElementById('copyFiscalPreviewBtn').addEventListener('click', async () => {
+        await this.copyText(document.getElementById('fiscalPreview')?.value || '');
+      });
+
+      document.getElementById('clearFiscalBtn').addEventListener('click', () => {
+        form.reset();
+        form.elements.service_city.value = this.state.company?.city ? `${this.state.company.city}${this.state.company?.state ? ` - ${this.state.company.state}` : ''}` : 'Muriaé - MG';
+        form.elements.service_code.value = '14.03.01';
+        this.syncFiscalPreview(form);
+      });
+
+      form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        const body = this.formToObject(event.currentTarget);
+        const payload = this.formToObject(form);
         await this.safeAction(async () => {
-          await this.api('/fiscal-documents', { method: 'POST', body });
+          await this.api('/fiscal-documents', {
+            method: 'POST',
+            body: {
+              doc_type: 'NFS-e',
+              status: payload.status || 'Pendente de emissão',
+              reference_type: payload.reference_id ? 'service_order' : 'manual',
+              reference_id: payload.reference_id || null,
+              notes: JSON.stringify(payload),
+            },
+          });
           await this.loadAll();
-          this.renderSection('fiscal');
-          this.toast('Documento fiscal adicionado.');
+          this.toast('Pré-nota salva na fila fiscal.');
         });
+      });
+
+      this.syncFiscalPreview(form);
+      this.bindListActions({
+        'copy-fiscal': async (id) => {
+          const item = this.state.fiscal.find((entry) => String(entry.id) === String(id));
+          const details = this.parseFiscalNotes(item);
+          await this.copyText(this.fiscalPreviewText(details));
+        },
+        'delete-fiscal': (id) => this.safeDelete(`/fiscal-documents/${id}`, 'Pré-nota excluída.'),
       });
     }
 
@@ -1003,6 +1094,87 @@ const App = {
         syncInput();
       });
     });
+  },
+
+
+  parseFiscalNotes(item) {
+    if (!item) return {};
+    try {
+      const parsed = typeof item.notes === 'string' ? JSON.parse(item.notes || '{}') : (item.notes || {});
+      return parsed && typeof parsed === 'object' ? parsed : { raw_notes: String(item.notes || '') };
+    } catch (_error) {
+      return { raw_notes: String(item.notes || '') };
+    }
+  },
+
+  fiscalPreviewText(payload = {}) {
+    return [
+      'NFS-e | Pré-nota de serviço',
+      `Cliente: ${payload.customer_name || '-'}`,
+      `CPF/CNPJ: ${payload.customer_document || '-'}`,
+      `Endereço: ${payload.customer_address || '-'}`,
+      `E-mail: ${payload.customer_email || '-'}`,
+      `Data do serviço: ${payload.service_date ? this.date(payload.service_date) : '-'}`,
+      `Município da prestação: ${payload.service_city || '-'}`,
+      `Código do serviço: ${payload.service_code || '-'}`,
+      `Valor do serviço: ${this.money(payload.service_value || 0)}`,
+      `Descrição do serviço: ${payload.service_description || '-'}`,
+      `Observações: ${payload.notes || '-'}`,
+    ].join('\n');
+  },
+
+  syncFiscalPreview(form) {
+    const preview = document.getElementById('fiscalPreview');
+    if (!preview || !form) return;
+    const payload = this.formToObject(form);
+    preview.value = this.fiscalPreviewText(payload);
+  },
+
+  prefillFiscalClient(form, clientId) {
+    const client = this.state.clients.find((item) => String(item.id) === String(clientId));
+    if (!client || !form) return;
+    form.elements.customer_name.value = client.name || '';
+    form.elements.customer_document.value = client.document || '';
+    form.elements.customer_email.value = client.email || '';
+    form.elements.customer_address.value = client.address || '';
+  },
+
+  prefillFiscalOrder(form, orderId) {
+    const order = this.state.orders.find((item) => String(item.id) === String(orderId));
+    if (!order || !form) return;
+    form.elements.service_date.value = order.service_date ? String(order.service_date).slice(0, 10) : (form.elements.service_date.value || '');
+    form.elements.service_value.value = order.total || '';
+    const pieces = [order.services_performed, order.diagnosis, order.complaint].filter(Boolean).join(' | ');
+    form.elements.service_description.value = pieces || form.elements.service_description.value || '';
+    if (order.client_id) {
+      const select = form.elements.client_id;
+      if (select) select.value = String(order.client_id);
+      this.prefillFiscalClient(form, order.client_id);
+      const filter = form.querySelector('.select-filter-input[data-filter-target="fiscalClientSelect"]');
+      if (filter) {
+        const selected = select?.selectedOptions?.[0];
+        filter.value = selected?.textContent || '';
+      }
+    }
+  },
+
+  async copyText(text) {
+    if (!text) {
+      this.toast('Nada para copiar.', 'error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      this.toast('Texto copiado.');
+    } catch (_error) {
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+      this.toast('Texto copiado.');
+    }
   },
 
   fillForm(form, data = {}) {

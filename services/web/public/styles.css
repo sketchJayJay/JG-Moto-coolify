@@ -233,3 +233,17 @@ a { color: inherit; }
   .brand-lockup img { width: 60px; height: 60px; }
   .row-actions { flex-wrap: wrap; }
 }
+
+
+.fiscal-card {
+  align-items: flex-start;
+}
+
+.fiscal-card span + span {
+  margin-top: 0.3rem;
+}
+
+textarea[readonly] {
+  opacity: 0.95;
+  background: #0f1117;
+}
