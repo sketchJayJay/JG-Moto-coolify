@@ -15,6 +15,7 @@ const App = {
     fiscal: [],
     fiscalCertificate: null,
     reports: null,
+    pendingFiscalOrderId: null,
     editing: {
       clientId: null,
       motorcycleId: null,
@@ -178,11 +179,25 @@ const App = {
     document.getElementById('nav').addEventListener('click', (event) => {
       const button = event.target.closest('.nav-btn');
       if (!button) return;
-      document.querySelectorAll('.nav-btn').forEach((node) => node.classList.remove('active'));
-      button.classList.add('active');
-      this.renderSection(button.dataset.section);
+      this.goToSection(button.dataset.section);
     });
     this.renderSection('dashboard');
+  },
+
+  setActiveSection(section) {
+    document.querySelectorAll('.nav-btn').forEach((node) => {
+      node.classList.toggle('active', node.dataset.section === section);
+    });
+  },
+
+  goToSection(section) {
+    this.setActiveSection(section);
+    this.renderSection(section);
+  },
+
+  openFiscalForOrder(orderId) {
+    this.state.pendingFiscalOrderId = orderId ? Number(orderId) : null;
+    this.goToSection('fiscal');
   },
 
   async loadAll() {
@@ -512,8 +527,9 @@ const App = {
             ${this.state.orders.map((item) => `
               <div class="entity-card">
                 <div><b>${this.escape(item.number)}</b><span>${this.escape(item.client_name || 'Sem cliente')} • ${this.escape(item.status)} • ${this.money(item.total)}</span></div>
-                <div class="row-actions">
+                <div class="row-actions wrap">
                   <button class="mini-btn" data-action="edit-order" data-id="${item.id}">Editar</button>
+                  <button class="mini-btn secondary" data-action="order-to-fiscal" data-id="${item.id}">Pré-nota</button>
                   <button class="mini-btn danger" data-action="delete-order" data-id="${item.id}">Excluir</button>
                 </div>
               </div>
@@ -903,6 +919,7 @@ const App = {
       document.getElementById('orderClearBtn').addEventListener('click', () => { this.resetEditing('orderId'); this.renderSection('os'); });
       this.bindListActions({
         'edit-order': (id) => { this.state.editing.orderId = Number(id); this.renderSection('os'); },
+        'order-to-fiscal': (id) => this.openFiscalForOrder(id),
         'delete-order': (id) => this.safeDelete(`/service-orders/${id}`, 'OS excluída.'),
       });
     }
@@ -1066,7 +1083,16 @@ const App = {
         });
       });
 
-      this.syncFiscalPreview(form);
+      if (this.state.pendingFiscalOrderId) {
+        const pendingId = String(this.state.pendingFiscalOrderId);
+        if (orderSelect) orderSelect.value = pendingId;
+        this.prefillFiscalOrder(form, pendingId);
+        this.syncFiscalPreview(form);
+        this.state.pendingFiscalOrderId = null;
+        this.toast('OS carregada na pré-nota fiscal.');
+      } else {
+        this.syncFiscalPreview(form);
+      }
       this.bindListActions({
         'copy-fiscal': async (id) => {
           const item = this.state.fiscal.find((entry) => String(entry.id) === String(id));
@@ -1222,9 +1248,14 @@ const App = {
     const order = this.state.orders.find((item) => String(item.id) === String(orderId));
     if (!order || !form) return;
     form.elements.service_date.value = order.service_date ? String(order.service_date).slice(0, 10) : (form.elements.service_date.value || '');
-    form.elements.service_value.value = order.total || '';
-    const pieces = [order.services_performed, order.diagnosis, order.complaint].filter(Boolean).join(' | ');
-    form.elements.service_description.value = pieces || form.elements.service_description.value || '';
+    const laborValue = Number(order.labor_price || 0);
+    const totalValue = Number(order.total || 0);
+    form.elements.service_value.value = laborValue > 0 ? laborValue : (totalValue || '');
+    const pieces = [order.services_performed, order.diagnosis, order.complaint].filter(Boolean);
+    form.elements.service_description.value = pieces.join(' | ') || form.elements.service_description.value || '';
+    if (order.notes) {
+      form.elements.notes.value = order.notes;
+    }
     if (order.client_id) {
       const select = form.elements.client_id;
       if (select) select.value = String(order.client_id);
