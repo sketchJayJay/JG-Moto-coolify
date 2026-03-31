@@ -103,6 +103,128 @@ async function getFiscalCertificateRow() {
   return result.rows[0] || null;
 }
 
+function safeJsonParse(value, fallback = {}) {
+  if (!value) return fallback;
+  try {
+    return typeof value === 'string' ? JSON.parse(value) : value;
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function buildFiscalPreviewText(payload = {}) {
+  return [
+    'NFS-e | Pré-nota de serviço',
+    `Cliente: ${payload.customer_name || '-'}`,
+    `CPF/CNPJ: ${payload.customer_document || '-'}`,
+    `Endereço: ${payload.customer_address || '-'}`,
+    `E-mail: ${payload.customer_email || '-'}`,
+    `Data do serviço: ${payload.service_date || '-'}`,
+    `Município da prestação: ${payload.service_city || '-'}`,
+    `Código do serviço: ${payload.service_code || '-'}`,
+    `Valor do serviço: R$ ${Number(payload.service_value || 0).toFixed(2)}`,
+    `Descrição do serviço: ${payload.service_description || '-'}`,
+    `Observações: ${payload.notes || '-'}`,
+  ].join('\n');
+}
+
+function validateFiscalPayload(payload = {}) {
+  const required = [
+    ['service_date', 'Data do serviço'],
+    ['service_code', 'Código do serviço'],
+    ['service_city', 'Município da prestação'],
+    ['service_description', 'Descrição do serviço'],
+    ['customer_name', 'Tomador / cliente'],
+    ['customer_document', 'CPF/CNPJ do cliente'],
+  ];
+  const missing = required.filter(([key]) => !String(payload[key] || '').trim()).map(([, label]) => label);
+  if (Number(payload.service_value || 0) <= 0) missing.push('Valor do serviço');
+  return missing;
+}
+
+async function markFiscalDocumentStatus(id, fields = {}) {
+  const current = await pool.query('SELECT * FROM fiscal_documents WHERE id = $1', [id]);
+  if (current.rowCount === 0) return null;
+  const row = current.rows[0];
+  const merged = {
+    status: fields.status ?? row.status,
+    notes: fields.notes ?? row.notes,
+    nfse_number: fields.nfse_number ?? row.nfse_number,
+    access_key: fields.access_key ?? row.access_key,
+    protocol: fields.protocol ?? row.protocol,
+    xml_content: fields.xml_content ?? row.xml_content,
+    pdf_url: fields.pdf_url ?? row.pdf_url,
+    provider_response: fields.provider_response ?? row.provider_response,
+    emitted_at: fields.emitted_at ?? row.emitted_at,
+  };
+  const result = await pool.query(
+    `UPDATE fiscal_documents
+     SET status=$1, notes=$2, nfse_number=$3, access_key=$4, protocol=$5, xml_content=$6, pdf_url=$7, provider_response=$8, emitted_at=$9
+     WHERE id=$10 RETURNING *`,
+    [merged.status, merged.notes, merged.nfse_number, merged.access_key, merged.protocol, merged.xml_content, merged.pdf_url, merged.provider_response, merged.emitted_at, id]
+  );
+  return result.rows[0];
+}
+
+async function emitFiscalDocument(docRow, certRow) {
+  const payload = safeJsonParse(docRow.notes, {});
+  const missing = validateFiscalPayload(payload);
+  if (missing.length) {
+    const error = new Error(`Preencha antes de emitir: ${missing.join(', ')}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  requireConfiguredCertificate(certRow);
+
+  const apiBaseUrl = certRow.environment === 'producao'
+    ? (process.env.NFSE_API_BASE_URL_PRODUCAO || process.env.NFSE_API_BASE_URL || '')
+    : (process.env.NFSE_API_BASE_URL_HOMOLOGACAO || process.env.NFSE_API_BASE_URL || '');
+
+  if (!apiBaseUrl) {
+    const error = new Error('Integração da NFS-e ainda não está configurada no servidor. Defina NFSE_API_BASE_URL_HOMOLOGACAO ou NFSE_API_BASE_URL_PRODUCAO.');
+    error.statusCode = 501;
+    throw error;
+  }
+
+  const providerPayload = {
+    environment: certRow.environment || 'homologacao',
+    provider_name: certRow.provider_name || '',
+    company_document: certRow.document_number || '',
+    document_type: docRow.doc_type || 'NFS-e',
+    preview_text: buildFiscalPreviewText(payload),
+    payload,
+  };
+
+  const response = await fetch(`${String(apiBaseUrl).replace(/\/$/, '')}/emit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-JG-MOTOS-SOURCE': 'coolify-app' },
+    body: JSON.stringify(providerPayload),
+  });
+
+  const rawText = await response.text();
+  const parsed = safeJsonParse(rawText, { raw: rawText });
+
+  if (!response.ok) {
+    const msg = parsed.message || parsed.error || `Falha ao emitir NFS-e (${response.status}).`;
+    const error = new Error(msg);
+    error.statusCode = response.status;
+    error.providerResponse = parsed;
+    throw error;
+  }
+
+  return {
+    status: parsed.status || 'Autorizada',
+    nfse_number: parsed.nfse_number || parsed.numero || '',
+    access_key: parsed.access_key || parsed.chave || '',
+    protocol: parsed.protocol || parsed.protocolo || '',
+    xml_content: parsed.xml_content || parsed.xml || '',
+    pdf_url: parsed.pdf_url || parsed.pdf || '',
+    provider_response: JSON.stringify(parsed),
+    emitted_at: new Date().toISOString(),
+  };
+}
+
 function requireConfiguredCertificate(row) {
   if (!row || !row.is_configured || !row.certificate_path || !row.certificate_password_encrypted) {
     const error = new Error('Nenhum certificado fiscal configurado.');
@@ -738,6 +860,40 @@ app.post('/api/fiscal-documents', authRequired, async (req, res) => {
 app.delete('/api/fiscal-documents/:id', authRequired, async (req, res) => {
   await pool.query('DELETE FROM fiscal_documents WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
+});
+
+app.post('/api/fiscal-documents/:id/emit', authRequired, async (req, res) => {
+  const docResult = await pool.query('SELECT * FROM fiscal_documents WHERE id = $1', [req.params.id]);
+  if (docResult.rowCount === 0) return res.status(404).json({ message: 'Documento fiscal não encontrado.' });
+
+  const certRow = await getFiscalCertificateRow();
+  await markFiscalDocumentStatus(req.params.id, { status: 'Emitindo...' });
+
+  try {
+    const emitted = await emitFiscalDocument(docResult.rows[0], certRow);
+    const row = await markFiscalDocumentStatus(req.params.id, emitted);
+    res.json({
+      message: 'Nota fiscal enviada com sucesso.',
+      document: row,
+    });
+  } catch (error) {
+    const current = docResult.rows[0];
+    const providerResponse = error.providerResponse ? JSON.stringify(error.providerResponse) : (current.provider_response || '');
+    const row = await markFiscalDocumentStatus(req.params.id, {
+      status: error.statusCode && error.statusCode < 500 ? 'Rejeitada' : 'Erro na emissão',
+      provider_response: providerResponse || JSON.stringify({ message: error.message }),
+    });
+    res.status(error.statusCode || 500).json({
+      message: error.message || 'Falha ao emitir a nota fiscal.',
+      document: row,
+    });
+  }
+});
+
+app.post('/api/fiscal-documents/:id/status', authRequired, async (req, res) => {
+  const docResult = await pool.query('SELECT * FROM fiscal_documents WHERE id = $1', [req.params.id]);
+  if (docResult.rowCount === 0) return res.status(404).json({ message: 'Documento fiscal não encontrado.' });
+  res.json({ document: docResult.rows[0] });
 });
 
 app.get('/api/backup/export', authRequired, async (_req, res) => {

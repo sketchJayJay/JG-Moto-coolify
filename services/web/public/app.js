@@ -713,7 +713,13 @@ const App = {
               <div class="actions full">
                 <button class="primary-btn">Salvar pré-nota</button>
                 <button type="button" class="secondary-btn" id="copyFiscalPreviewBtn">Copiar texto</button>
+                <button type="button" class="secondary-btn" id="emitFiscalBtn">Emitir nota fiscal</button>
+                <button type="button" class="ghost-btn" id="checkFiscalStatusBtn">Consultar status</button>
                 <button type="button" class="ghost-btn" id="clearFiscalBtn">Limpar</button>
+              </div>
+              <div class="field full">
+                <label>Retorno da emissão</label>
+                <textarea id="fiscalEmitResult" rows="6" readonly placeholder="O retorno da emissão vai aparecer aqui."></textarea>
               </div>
             </form>
           </article>
@@ -733,6 +739,8 @@ const App = {
                     </div>
                     <div class="row-actions wrap">
                       <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
+                      <button class="mini-btn secondary" data-action="emit-fiscal" data-id="${item.id}">Emitir</button>
+                      <button class="mini-btn" data-action="status-fiscal" data-id="${item.id}">Status</button>
                       <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>
                     </div>
                   </div>
@@ -1066,20 +1074,30 @@ const App = {
 
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        const payload = this.formToObject(form);
         await this.safeAction(async () => {
-          await this.api('/fiscal-documents', {
-            method: 'POST',
-            body: {
-              doc_type: 'NFS-e',
-              status: payload.status || 'Pendente de emissão',
-              reference_type: payload.reference_id ? 'service_order' : 'manual',
-              reference_id: payload.reference_id || null,
-              notes: JSON.stringify(payload),
-            },
-          });
+          await this.saveCurrentFiscalDraft(form);
           await this.loadAll();
           this.toast('Pré-nota salva na fila fiscal.');
+        });
+      });
+
+      document.getElementById('emitFiscalBtn')?.addEventListener('click', async () => {
+        await this.safeAction(async () => {
+          const saved = await this.saveCurrentFiscalDraft(form);
+          const response = await this.emitFiscalDocument(saved.id);
+          await this.loadAll();
+          this.renderFiscalEmitResult(response.document);
+          this.toast(response.message || 'Nota fiscal enviada.');
+        });
+      });
+
+      document.getElementById('checkFiscalStatusBtn')?.addEventListener('click', async () => {
+        await this.safeAction(async () => {
+          const latest = this.state.fiscal[0];
+          if (!latest) throw new Error('Salve ou emita uma pré-nota antes de consultar o status.');
+          const response = await this.fetchFiscalStatus(latest.id);
+          this.renderFiscalEmitResult(response.document);
+          this.toast('Status atualizado.');
         });
       });
 
@@ -1098,6 +1116,21 @@ const App = {
           const item = this.state.fiscal.find((entry) => String(entry.id) === String(id));
           const details = this.parseFiscalNotes(item);
           await this.copyText(this.fiscalPreviewText(details));
+        },
+        'emit-fiscal': async (id) => {
+          await this.safeAction(async () => {
+            const response = await this.emitFiscalDocument(id);
+            await this.loadAll();
+            this.renderFiscalEmitResult(response.document);
+            this.toast(response.message || 'Nota fiscal enviada.');
+          });
+        },
+        'status-fiscal': async (id) => {
+          await this.safeAction(async () => {
+            const response = await this.fetchFiscalStatus(id);
+            this.renderFiscalEmitResult(response.document);
+            this.toast('Status atualizado.');
+          });
         },
         'delete-fiscal': (id) => this.safeDelete(`/fiscal-documents/${id}`, 'Pré-nota excluída.'),
       });
@@ -1233,6 +1266,61 @@ const App = {
     if (!preview || !form) return;
     const payload = this.formToObject(form);
     preview.value = this.fiscalPreviewText(payload);
+  },
+
+  fiscalEmitResultText(item) {
+    if (!item) return '';
+    const lines = [
+      `Status: ${item.status || '-'}`,
+      `Número NFS-e: ${item.nfse_number || '-'}`,
+      `Chave: ${item.access_key || '-'}`,
+      `Protocolo: ${item.protocol || '-'}`,
+      `Emitida em: ${item.emitted_at ? this.dateTime(item.emitted_at) : '-'}`,
+    ];
+    const details = item.provider_response ? this.tryPrettyJson(item.provider_response) : '';
+    return [lines.join('\n'), details].filter(Boolean).join('\n\n');
+  },
+
+  dateTime(value) {
+    if (!value) return '-';
+    return new Date(value).toLocaleString('pt-BR');
+  },
+
+  tryPrettyJson(value) {
+    try {
+      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      return JSON.stringify(parsed, null, 2);
+    } catch (_error) {
+      return String(value || '');
+    }
+  },
+
+  async saveCurrentFiscalDraft(form) {
+    const payload = this.formToObject(form);
+    return this.api('/fiscal-documents', {
+      method: 'POST',
+      body: {
+        doc_type: 'NFS-e',
+        status: payload.status || 'Pendente de emissão',
+        reference_type: payload.reference_id ? 'service_order' : 'manual',
+        reference_id: payload.reference_id || null,
+        notes: JSON.stringify(payload),
+      },
+    });
+  },
+
+  async emitFiscalDocument(id) {
+    return this.api(`/fiscal-documents/${id}/emit`, { method: 'POST' });
+  },
+
+  async fetchFiscalStatus(id) {
+    return this.api(`/fiscal-documents/${id}/status`, { method: 'POST' });
+  },
+
+  renderFiscalEmitResult(item) {
+    const box = document.getElementById('fiscalEmitResult');
+    if (!box) return;
+    box.value = this.fiscalEmitResultText(item);
   },
 
   prefillFiscalClient(form, clientId) {

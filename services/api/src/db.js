@@ -166,6 +166,13 @@ CREATE TABLE IF NOT EXISTS fiscal_documents (
   reference_type TEXT DEFAULT '',
   reference_id INTEGER,
   notes TEXT DEFAULT '',
+  nfse_number TEXT DEFAULT '',
+  access_key TEXT DEFAULT '',
+  protocol TEXT DEFAULT '',
+  xml_content TEXT DEFAULT '',
+  pdf_url TEXT DEFAULT '',
+  provider_response TEXT DEFAULT '',
+  emitted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -204,6 +211,14 @@ async function waitForDb(retries = 20, delayMs = 3000) {
 async function bootstrap() {
   await waitForDb();
   await pool.query(schemaSql);
+
+  await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS nfse_number TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS access_key TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS protocol TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS xml_content TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS pdf_url TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS provider_response TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS emitted_at TIMESTAMPTZ`);
 
   const companyCheck = await pool.query('SELECT id FROM company_settings LIMIT 1');
   if (companyCheck.rowCount === 0) {
