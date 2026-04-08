@@ -195,51 +195,6 @@ CREATE TABLE IF NOT EXISTS fiscal_certificate_settings (
 );
 `;
 
-
-const initialStockItems = [
-  { name: 'Pastilha dianteira Fazer 150', quantity: 10 },
-  { name: 'Relé de pisca 2 pinos', quantity: 5 },
-  { name: 'Cabo de velocímetro YBR', quantity: 10 },
-  { name: 'Cabo de velocímetro Factor 2011', quantity: 10 },
-  { name: 'Caixa de vela YBR', quantity: 1 },
-  { name: 'Caixa de direção YBR', quantity: 5 },
-  { name: 'Cabo de velocímetro Titan 2000', quantity: 10 },
-  { name: 'Cabo de velocímetro Titan 150 2012', quantity: 10 },
-  { name: 'Engrenagem de velocímetro Titan 2000', quantity: 10 },
-  { name: 'Bucha de coroa Titan 150', quantity: 5 },
-  { name: 'Retentor do motor de arranque Titan 150', quantity: 10 },
-  { name: 'Disco de embreagem Titan', quantity: 5 },
-  { name: 'Disco de embreagem YBR', quantity: 5 },
-  { name: 'Filtro de óleo Fazer 250', quantity: 10 },
-  { name: 'Lâmpada de farol Philips', quantity: 10 },
-  { name: 'Escova de arranque Titan 150 Magnetron', quantity: 10 },
-  { name: 'Retentor de válvula', quantity: 20 },
-  { name: 'Junta da tampa de válvula Titan 150', quantity: 10 },
-  { name: 'Retentor da tampa de válvula Titan 150', quantity: 20 },
-];
-
-async function seedInitialStockItems() {
-  for (const item of initialStockItems) {
-    const exists = await pool.query('SELECT id FROM products WHERE LOWER(name) = LOWER($1) LIMIT 1', [item.name]);
-    if (exists.rowCount > 0) continue;
-    await pool.query(
-      `INSERT INTO products (name, code, supplier, category, cost, price, quantity, min_quantity, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        item.name,
-        '',
-        '',
-        'Peças',
-        0,
-        0,
-        Number(item.quantity || 0),
-        1,
-        'Item adicionado automaticamente ao estoque inicial.',
-      ]
-    );
-  }
-}
-
 async function waitForDb(retries = 20, delayMs = 3000) {
   for (let i = 1; i <= retries; i += 1) {
     try {
@@ -280,8 +235,6 @@ async function bootstrap() {
       ['', 'homologacao', false]
     );
   }
-
-  await seedInitialStockItems();
 
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@jgmotos.local';
   const adminPassword = process.env.ADMIN_PASSWORD || '123456';

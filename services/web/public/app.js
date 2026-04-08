@@ -1186,38 +1186,55 @@ const App = {
       const select = root.querySelector(`#${input.dataset.filterTarget}`);
       if (!select) return;
 
-      if (!select._allOptions) {
+      const buildOptionCache = () => {
         select._allOptions = [...select.options].map((option, index) => ({
           value: option.value,
           text: option.textContent,
           isPlaceholder: index === 0,
         }));
-      }
+      };
+
+      buildOptionCache();
 
       const renderOptions = (query = '') => {
+        if (!select._allOptions || !select._allOptions.length) buildOptionCache();
         const currentValue = select.value;
         const normalized = this.normalizeText(query);
-        const filtered = select._allOptions.filter((option) => option.isPlaceholder || !normalized || this.normalizeText(option.text).includes(normalized));
+        const filtered = select._allOptions.filter((option) => {
+          if (option.isPlaceholder) return true;
+          if (!normalized) return true;
+          const haystack = this.normalizeText(option.text);
+          return haystack.includes(normalized);
+        });
 
         select.innerHTML = filtered.map((option) => `<option value="${this.escape(option.value)}">${this.escape(option.text)}</option>`).join('');
+
         const hasCurrent = filtered.some((option) => String(option.value) === String(currentValue));
-        select.value = hasCurrent ? currentValue : '';
+        if (hasCurrent) {
+          select.value = currentValue;
+        } else if (filtered.length === 2 && filtered[0].isPlaceholder) {
+          select.value = String(filtered[1].value);
+        } else {
+          select.value = '';
+        }
       };
 
-      const syncInput = () => {
+      const syncInputFromSelection = () => {
         const selected = select.selectedOptions[0];
-        input.value = select.value && selected ? selected.textContent : '';
+        if (select.value && selected) {
+          input.value = selected.textContent;
+        }
       };
 
-      renderOptions(input.value);
-      syncInput();
+      renderOptions('');
+      if (select.value) syncInputFromSelection();
 
       input.addEventListener('input', () => {
         renderOptions(input.value);
       });
 
       input.addEventListener('focus', () => {
-        if (!input.value) renderOptions('');
+        renderOptions(input.value);
       });
 
       input.addEventListener('keydown', (event) => {
@@ -1225,11 +1242,22 @@ const App = {
           input.value = '';
           renderOptions('');
           select.value = '';
+          return;
+        }
+
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          const firstMatch = [...select.options].find((option, index) => index > 0 && option.value);
+          if (firstMatch) {
+            select.value = firstMatch.value;
+            syncInputFromSelection();
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         }
       });
 
       select.addEventListener('change', () => {
-        syncInput();
+        syncInputFromSelection();
       });
     });
   },
