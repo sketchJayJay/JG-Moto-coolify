@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jg_motos}
+      POSTGRES_USER: ${POSTGRES_USER:-jg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jg} -d ${POSTGRES_DB:-jg_motos}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./services/api
+    environment:
+      PORT: 3000
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jg_motos}
+      POSTGRES_USER: ${POSTGRES_USER:-jg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-jg}:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-jg_motos}
+      JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET}
+      ADMIN_NAME: ${ADMIN_NAME:-Administrador JG}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@jgmotos.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
+      CERT_STORAGE_DIR: ${CERT_STORAGE_DIR:-/data/certs}
+      CERT_SECRET: ${CERT_SECRET:-troque-por-uma-chave-fiscal}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - certs_data:/data/certs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: ./services/web
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  certs_data:
