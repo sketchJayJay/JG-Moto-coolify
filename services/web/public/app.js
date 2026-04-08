@@ -462,12 +462,14 @@ const App = {
             <div class="field full"><label>Observações</label><textarea name="notes" rows="3"></textarea></div>
             <div class="field full">
               <div class="item-box">
-                <div class="card-head compact"><h3>Itens</h3><button type="button" class="secondary-btn" id="addBudgetItemBtn">+ Item</button></div>
+                <div class="card-head compact"><h3>Itens do orçamento</h3><button type="button" class="secondary-btn" id="addBudgetItemBtn">+ Item</button></div>
                 <div id="budgetItems" class="item-list"></div>
+                <small class="muted">Você pode puxar a peça do estoque ou digitar manualmente quando ela não estiver cadastrada.</small>
               </div>
             </div>
             <div class="actions full">
               <button class="primary-btn">${this.state.editing.budgetId ? 'Atualizar' : 'Salvar orçamento'}</button>
+              <button type="button" class="secondary-btn" id="printBudgetDraftBtn">Imprimir orçamento</button>
               <button type="button" class="ghost-btn" id="budgetClearBtn">Limpar</button>
             </div>
           </form>
@@ -480,6 +482,7 @@ const App = {
                 <div><b>${this.escape(item.number)}</b><span>${this.escape(item.client_name || 'Sem cliente')} • ${this.escape(item.status)} • ${this.money(item.total)}</span></div>
                 <div class="row-actions wrap">
                   <button class="mini-btn" data-action="edit-budget" data-id="${item.id}">Editar</button>
+                  <button class="mini-btn secondary" data-action="print-budget" data-id="${item.id}">Imprimir</button>
                   <button class="mini-btn" data-action="convert-budget" data-id="${item.id}">Virar OS</button>
                   <button class="mini-btn danger" data-action="delete-budget" data-id="${item.id}">Excluir</button>
                 </div>
@@ -513,10 +516,18 @@ const App = {
             <div class="field full"><label>Diagnóstico</label><textarea name="diagnosis" rows="2"></textarea></div>
             <div class="field full"><label>Serviços executados</label><textarea name="services_performed" rows="3"></textarea></div>
             <div class="field"><label>Mão de obra</label><input name="labor_price" type="number" step="0.01"></div>
-            <div class="field"><label>Peças</label><input name="parts_total" type="number" step="0.01"></div>
+            <div class="field"><label>Peças da OS</label><input name="parts_total" type="number" step="0.01" readonly></div>
+            <div class="field full">
+              <div class="item-box">
+                <div class="card-head compact"><h3>Peças da OS</h3><button type="button" class="secondary-btn" id="addOrderItemBtn">+ Peça</button></div>
+                <div id="orderItems" class="item-list"></div>
+                <small class="muted">Escolha peças do estoque ou digite manualmente se a peça ainda não estiver cadastrada.</small>
+              </div>
+            </div>
             <div class="field full"><label>Observações</label><textarea name="notes" rows="2"></textarea></div>
             <div class="actions full">
               <button class="primary-btn">${this.state.editing.orderId ? 'Atualizar' : 'Salvar OS'}</button>
+              <button type="button" class="secondary-btn" id="printOrderDraftBtn">Imprimir OS</button>
               <button type="button" class="ghost-btn" id="orderClearBtn">Limpar</button>
             </div>
           </form>
@@ -529,6 +540,7 @@ const App = {
                 <div><b>${this.escape(item.number)}</b><span>${this.escape(item.client_name || 'Sem cliente')} • ${this.escape(item.status)} • ${this.money(item.total)}</span></div>
                 <div class="row-actions wrap">
                   <button class="mini-btn" data-action="edit-order" data-id="${item.id}">Editar</button>
+                  <button class="mini-btn secondary" data-action="print-order" data-id="${item.id}">Imprimir</button>
                   <button class="mini-btn secondary" data-action="order-to-fiscal" data-id="${item.id}">Pré-nota</button>
                   <button class="mini-btn danger" data-action="delete-order" data-id="${item.id}">Excluir</button>
                 </div>
@@ -884,10 +896,14 @@ const App = {
       }
       if (!itemsBox.children.length) this.appendBudgetItem(itemsBox);
       document.getElementById('addBudgetItemBtn').addEventListener('click', () => this.appendBudgetItem(itemsBox));
+      document.getElementById('printBudgetDraftBtn').addEventListener('click', () => {
+        const draft = this.previewBudgetFromForm(form, itemsBox);
+        this.printBudgetDocument(draft);
+      });
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const body = this.formToObject(form);
-        body.items = this.collectItems(itemsBox, false);
+        body.items = this.collectItems(itemsBox, true);
         await this.safeAction(async () => {
           if (this.state.editing.budgetId) {
             await this.api(`/budgets/${this.state.editing.budgetId}`, { method: 'PUT', body });
@@ -902,6 +918,10 @@ const App = {
       document.getElementById('budgetClearBtn').addEventListener('click', () => { this.resetEditing('budgetId'); this.renderSection('orcamentos'); });
       this.bindListActions({
         'edit-budget': (id) => { this.state.editing.budgetId = Number(id); this.renderSection('orcamentos'); },
+        'print-budget': (id) => {
+          const item = this.state.budgets.find((entry) => String(entry.id) === String(id));
+          if (item) this.printBudgetDocument(item);
+        },
         'delete-budget': (id) => this.safeDelete(`/budgets/${id}`, 'Orçamento excluído.'),
         'convert-budget': (id) => this.safeAction(async () => { await this.api(`/budgets/${id}/convert-service-order`, { method: 'POST' }); await this.loadAll(); this.toast('Orçamento convertido em OS.'); }),
       });
@@ -909,10 +929,24 @@ const App = {
 
     if (section === 'os') {
       const form = document.getElementById('orderForm');
-      if (this.state.editing.orderId) this.fillForm(form, this.state.orders.find((item) => item.id === this.state.editing.orderId));
+      const itemsBox = document.getElementById('orderItems');
+      const current = this.state.orders.find((item) => item.id === this.state.editing.orderId);
+      if (current) {
+        this.fillForm(form, current);
+        (current.items || []).forEach((item) => this.appendOrderItem(itemsBox, item));
+      }
+      if (!itemsBox.children.length) this.appendOrderItem(itemsBox);
+      document.getElementById('addOrderItemBtn').addEventListener('click', () => this.appendOrderItem(itemsBox));
+      document.getElementById('printOrderDraftBtn').addEventListener('click', () => {
+        const draft = this.previewOrderFromForm(form, itemsBox);
+        this.printOrderDocument(draft);
+      });
+      this.syncOrderPartsFromItems(form, itemsBox);
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const body = this.formToObject(form);
+        body.items = this.collectItems(itemsBox, true);
+        body.parts_total = form.elements.parts_total.value || '0';
         await this.safeAction(async () => {
           if (this.state.editing.orderId) {
             await this.api(`/service-orders/${this.state.editing.orderId}`, { method: 'PUT', body });
@@ -927,6 +961,10 @@ const App = {
       document.getElementById('orderClearBtn').addEventListener('click', () => { this.resetEditing('orderId'); this.renderSection('os'); });
       this.bindListActions({
         'edit-order': (id) => { this.state.editing.orderId = Number(id); this.renderSection('os'); },
+        'print-order': (id) => {
+          const item = this.state.orders.find((entry) => String(entry.id) === String(id));
+          if (item) this.printOrderDocument(item);
+        },
         'order-to-fiscal': (id) => this.openFiscalForOrder(id),
         'delete-order': (id) => this.safeDelete(`/service-orders/${id}`, 'OS excluída.'),
       });
@@ -1186,55 +1224,38 @@ const App = {
       const select = root.querySelector(`#${input.dataset.filterTarget}`);
       if (!select) return;
 
-      const buildOptionCache = () => {
+      if (!select._allOptions) {
         select._allOptions = [...select.options].map((option, index) => ({
           value: option.value,
           text: option.textContent,
           isPlaceholder: index === 0,
         }));
-      };
-
-      buildOptionCache();
+      }
 
       const renderOptions = (query = '') => {
-        if (!select._allOptions || !select._allOptions.length) buildOptionCache();
         const currentValue = select.value;
         const normalized = this.normalizeText(query);
-        const filtered = select._allOptions.filter((option) => {
-          if (option.isPlaceholder) return true;
-          if (!normalized) return true;
-          const haystack = this.normalizeText(option.text);
-          return haystack.includes(normalized);
-        });
+        const filtered = select._allOptions.filter((option) => option.isPlaceholder || !normalized || this.normalizeText(option.text).includes(normalized));
 
         select.innerHTML = filtered.map((option) => `<option value="${this.escape(option.value)}">${this.escape(option.text)}</option>`).join('');
-
         const hasCurrent = filtered.some((option) => String(option.value) === String(currentValue));
-        if (hasCurrent) {
-          select.value = currentValue;
-        } else if (filtered.length === 2 && filtered[0].isPlaceholder) {
-          select.value = String(filtered[1].value);
-        } else {
-          select.value = '';
-        }
+        select.value = hasCurrent ? currentValue : '';
       };
 
-      const syncInputFromSelection = () => {
+      const syncInput = () => {
         const selected = select.selectedOptions[0];
-        if (select.value && selected) {
-          input.value = selected.textContent;
-        }
+        input.value = select.value && selected ? selected.textContent : '';
       };
 
-      renderOptions('');
-      if (select.value) syncInputFromSelection();
+      renderOptions(input.value);
+      syncInput();
 
       input.addEventListener('input', () => {
         renderOptions(input.value);
       });
 
       input.addEventListener('focus', () => {
-        renderOptions(input.value);
+        if (!input.value) renderOptions('');
       });
 
       input.addEventListener('keydown', (event) => {
@@ -1242,22 +1263,11 @@ const App = {
           input.value = '';
           renderOptions('');
           select.value = '';
-          return;
-        }
-
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          const firstMatch = [...select.options].find((option, index) => index > 0 && option.value);
-          if (firstMatch) {
-            select.value = firstMatch.value;
-            syncInputFromSelection();
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-          }
         }
       });
 
       select.addEventListener('change', () => {
-        syncInputFromSelection();
+        syncInput();
       });
     });
   },
@@ -1384,6 +1394,162 @@ const App = {
     }
   },
 
+  getCompanyPrintData() {
+    const c = this.state.company || {};
+    return {
+      name: c.name || 'JG MOTOS',
+      cnpj: c.cnpj || '',
+      phone: c.phone || '',
+      email: c.email || '',
+      address: c.address || '',
+      city: c.city || '',
+      state: c.state || '',
+      responsible: c.responsible || '',
+    };
+  },
+
+  calculateItemsTotal(items = []) {
+    return (items || []).reduce((sum, item) => sum + (Number(item.quantity || 0) * Number(item.unit_price || 0)), 0);
+  },
+
+  syncOrderPartsFromItems(form, container) {
+    if (!form || !container) return;
+    const total = this.calculateItemsTotal(this.collectItems(container, true));
+    if (form.elements.parts_total) form.elements.parts_total.value = total.toFixed(2);
+  },
+
+  previewBudgetFromForm(form, itemsBox) {
+    const payload = this.formToObject(form);
+    const client = this.state.clients.find((item) => String(item.id) === String(payload.client_id));
+    const motorcycle = this.state.motorcycles.find((item) => String(item.id) === String(payload.motorcycle_id));
+    const items = this.collectItems(itemsBox, true);
+    return {
+      number: this.state.editing.budgetId ? (this.state.budgets.find((item) => item.id === this.state.editing.budgetId)?.number || 'ORÇAMENTO') : 'ORÇAMENTO',
+      budget_date: payload.budget_date,
+      valid_until: payload.valid_until,
+      status: payload.status,
+      notes: payload.notes,
+      total: this.calculateItemsTotal(items),
+      client_name: client?.name || '',
+      client_document: client?.document || '',
+      client_phone: client?.phone || '',
+      client_email: client?.email || '',
+      client_address: client?.address || '',
+      brand: motorcycle?.brand || '',
+      model: motorcycle?.model || '',
+      plate: motorcycle?.plate || '',
+      items,
+    };
+  },
+
+  previewOrderFromForm(form, itemsBox) {
+    const payload = this.formToObject(form);
+    const client = this.state.clients.find((item) => String(item.id) === String(payload.client_id));
+    const motorcycle = this.state.motorcycles.find((item) => String(item.id) === String(payload.motorcycle_id));
+    const items = this.collectItems(itemsBox, true);
+    const partsTotal = this.calculateItemsTotal(items);
+    return {
+      number: this.state.editing.orderId ? (this.state.orders.find((item) => item.id === this.state.editing.orderId)?.number || 'ORDEM DE SERVIÇO') : 'ORDEM DE SERVIÇO',
+      service_date: payload.service_date,
+      status: payload.status,
+      complaint: payload.complaint,
+      diagnosis: payload.diagnosis,
+      services_performed: payload.services_performed,
+      labor_price: Number(payload.labor_price || 0),
+      parts_total: partsTotal,
+      total: Number(payload.labor_price || 0) + partsTotal,
+      notes: payload.notes,
+      client_name: client?.name || '',
+      client_document: client?.document || '',
+      client_phone: client?.phone || '',
+      client_email: client?.email || '',
+      client_address: client?.address || '',
+      brand: motorcycle?.brand || '',
+      model: motorcycle?.model || '',
+      plate: motorcycle?.plate || '',
+      items,
+    };
+  },
+
+  formatMotorcycleLine(doc) {
+    const parts = [`${doc.brand || ''} ${doc.model || ''}`.trim(), doc.plate ? `Placa ${doc.plate}` : ''].filter(Boolean);
+    return parts.join(' • ') || '-';
+  },
+
+  printDocumentWindow(title, html) {
+    const win = window.open('', '_blank', 'width=980,height=760');
+    if (!win) {
+      this.toast('Libere pop-ups para imprimir o documento.', 'error');
+      return;
+    }
+    win.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>${this.escape(title)}</title><style>
+      body{margin:0;background:#eef0f4;font-family:Inter,Arial,sans-serif;color:#15161c}
+      .page{max-width:920px;margin:24px auto;background:#fff;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.12);position:relative}
+      .watermark{position:absolute;inset:110px 0 0 0;display:flex;justify-content:center;pointer-events:none;opacity:.05}
+      .watermark img{width:420px;max-width:70%}
+      .header{background:linear-gradient(135deg,#15161c,#281318);color:#fff;padding:28px 34px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+      .brand{display:flex;align-items:center;gap:18px}.brand img{width:78px;height:78px;border-radius:18px;background:#fff;padding:6px}.brand h1{margin:0;font-size:30px}.brand p{margin:6px 0 0;color:#ffcbcb}
+      .badge{padding:10px 14px;border:1px solid rgba(255,255,255,.18);border-radius:999px;background:rgba(255,255,255,.06);font-size:13px}
+      .body{padding:30px 34px 26px;position:relative;z-index:1}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:18px}.box{border:1px solid #e8e8ef;border-radius:18px;padding:16px;background:#fcfcfe}.box h3{margin:0 0 10px;font-size:15px;color:#b91c1c;text-transform:uppercase;letter-spacing:.04em}.line{margin:6px 0;font-size:14px}.line b{display:inline-block;min-width:95px}.table{width:100%;border-collapse:collapse;margin-top:6px}.table th,.table td{padding:12px 10px;border-bottom:1px solid #ececf3;font-size:14px;text-align:left}.table th{font-size:12px;text-transform:uppercase;color:#6b7280}.right{text-align:right}.totals{margin-top:18px;margin-left:auto;max-width:320px}.total-row{display:flex;justify-content:space-between;padding:10px 14px;border:1px solid #ececf3;border-radius:14px;margin-top:8px;background:#fafafc}.total-row.strong{background:#17181f;color:#fff;border-color:#17181f;font-size:18px}.notes{white-space:pre-wrap;line-height:1.6;font-size:14px}.signatures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:30px;margin-top:42px}.sig{padding-top:36px;border-top:1px solid #222;text-align:center;font-size:14px}.footer{padding:0 34px 30px;color:#6b7280;font-size:12px}.muted{color:#6b7280}@media print{body{background:#fff}.page{margin:0;box-shadow:none;border-radius:0}.header{print-color-adjust:exact;-webkit-print-color-adjust:exact}}</style></head><body><div class="page">${html}</div><script>window.onload=()=>{setTimeout(()=>window.print(),250)};</script></body></html>`);
+    win.document.close();
+  },
+
+  printBudgetDocument(doc) {
+    const company = this.getCompanyPrintData();
+    const items = doc.items || [];
+    const total = Number(doc.total || this.calculateItemsTotal(items));
+    this.printDocumentWindow(`Orçamento ${doc.number || ''}`, `
+      <div class="watermark"><img src="logo.png" alt="Logo"></div>
+      <div class="header">
+        <div class="brand"><img src="logo.png" alt="Logo"><div><h1>ORÇAMENTO</h1><p>${this.escape(company.name)}</p></div></div>
+        <div class="badge">${this.escape(doc.number || 'ORÇAMENTO')}</div>
+      </div>
+      <div class="body">
+        <div class="grid">
+          <div class="box"><h3>Empresa</h3><div class="line"><b>Empresa:</b> ${this.escape(company.name)}</div><div class="line"><b>CNPJ:</b> ${this.escape(company.cnpj || '-')}</div><div class="line"><b>Telefone:</b> ${this.escape(company.phone || '-')}</div><div class="line"><b>Cidade:</b> ${this.escape([company.city, company.state].filter(Boolean).join(' / ') || '-')}</div></div>
+          <div class="box"><h3>Cliente</h3><div class="line"><b>Nome:</b> ${this.escape(doc.client_name || '-')}</div><div class="line"><b>Documento:</b> ${this.escape(doc.client_document || '-')}</div><div class="line"><b>Telefone:</b> ${this.escape(doc.client_phone || '-')}</div><div class="line"><b>Endereço:</b> ${this.escape(doc.client_address || '-')}</div></div>
+        </div>
+        <div class="grid">
+          <div class="box"><h3>Detalhes</h3><div class="line"><b>Data:</b> ${this.date(doc.budget_date)}</div><div class="line"><b>Validade:</b> ${this.date(doc.valid_until)}</div><div class="line"><b>Status:</b> ${this.escape(doc.status || '-')}</div><div class="line"><b>Moto:</b> ${this.escape(this.formatMotorcycleLine(doc))}</div></div>
+          <div class="box"><h3>Observações</h3><div class="notes">${this.escape(doc.notes || 'Sem observações.')}</div></div>
+        </div>
+        <div class="box"><h3>Itens</h3><table class="table"><thead><tr><th>Descrição</th><th class="right">Qtd</th><th class="right">Unitário</th><th class="right">Total</th></tr></thead><tbody>${items.map((item)=>`<tr><td>${this.escape(item.description)}</td><td class="right">${Number(item.quantity || 0).toLocaleString('pt-BR')}</td><td class="right">${this.money(item.unit_price)}</td><td class="right">${this.money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Sem itens.</td></tr>'}</tbody></table></div>
+        <div class="totals"><div class="total-row strong"><span>Total do orçamento</span><strong>${this.money(total)}</strong></div></div>
+        <div class="signatures"><div class="sig">Assinatura do cliente</div><div class="sig">${this.escape(company.name)}</div></div>
+      </div>
+      <div class="footer">Documento gerado pelo sistema JG MOTOS.</div>`);
+  },
+
+  printOrderDocument(doc) {
+    const company = this.getCompanyPrintData();
+    const items = doc.items || [];
+    const labor = Number(doc.labor_price || 0);
+    const parts = Number(doc.parts_total || this.calculateItemsTotal(items));
+    const total = Number(doc.total || (labor + parts));
+    this.printDocumentWindow(`OS ${doc.number || ''}`, `
+      <div class="watermark"><img src="logo.png" alt="Logo"></div>
+      <div class="header">
+        <div class="brand"><img src="logo.png" alt="Logo"><div><h1>ORDEM DE SERVIÇO</h1><p>${this.escape(company.name)}</p></div></div>
+        <div class="badge">${this.escape(doc.number || 'ORDEM DE SERVIÇO')}</div>
+      </div>
+      <div class="body">
+        <div class="grid">
+          <div class="box"><h3>Cliente</h3><div class="line"><b>Nome:</b> ${this.escape(doc.client_name || '-')}</div><div class="line"><b>Documento:</b> ${this.escape(doc.client_document || '-')}</div><div class="line"><b>Telefone:</b> ${this.escape(doc.client_phone || '-')}</div><div class="line"><b>E-mail:</b> ${this.escape(doc.client_email || '-')}</div><div class="line"><b>Endereço:</b> ${this.escape(doc.client_address || '-')}</div></div>
+          <div class="box"><h3>OS</h3><div class="line"><b>Data:</b> ${this.date(doc.service_date)}</div><div class="line"><b>Status:</b> ${this.escape(doc.status || '-')}</div><div class="line"><b>Moto:</b> ${this.escape(this.formatMotorcycleLine(doc))}</div><div class="line"><b>Empresa:</b> ${this.escape(company.name)}</div></div>
+        </div>
+        <div class="grid">
+          <div class="box"><h3>Defeito relatado</h3><div class="notes">${this.escape(doc.complaint || 'Não informado.')}</div></div>
+          <div class="box"><h3>Diagnóstico</h3><div class="notes">${this.escape(doc.diagnosis || 'Não informado.')}</div></div>
+        </div>
+        <div class="box"><h3>Serviços executados</h3><div class="notes">${this.escape(doc.services_performed || 'Não informado.')}</div></div>
+        <div class="box"><h3>Peças aplicadas</h3><table class="table"><thead><tr><th>Descrição</th><th class="right">Qtd</th><th class="right">Unitário</th><th class="right">Total</th></tr></thead><tbody>${items.map((item)=>`<tr><td>${this.escape(item.description)}</td><td class="right">${Number(item.quantity || 0).toLocaleString('pt-BR')}</td><td class="right">${this.money(item.unit_price)}</td><td class="right">${this.money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Sem peças vinculadas.</td></tr>'}</tbody></table></div>
+        <div class="totals"><div class="total-row"><span>Mão de obra</span><strong>${this.money(labor)}</strong></div><div class="total-row"><span>Peças</span><strong>${this.money(parts)}</strong></div><div class="total-row strong"><span>Total da OS</span><strong>${this.money(total)}</strong></div></div>
+        <div class="box"><h3>Observações</h3><div class="notes">${this.escape(doc.notes || 'Sem observações.')}</div></div>
+        <div class="signatures"><div class="sig">Assinatura do cliente</div><div class="sig">${this.escape(company.name)}</div></div>
+      </div>
+      <div class="footer">Documento gerado pelo sistema JG MOTOS.</div>`);
+  },
+
   fileToDataUrl(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -1487,16 +1653,51 @@ const App = {
   },
 
   appendBudgetItem(container, data = {}) {
+    const row = this.buildStockableItemRow(data, { rowClass: 'budget' });
+    container.appendChild(row);
+  },
+
+  appendOrderItem(container, data = {}) {
+    const row = this.buildStockableItemRow(data, { rowClass: 'order' });
+    const form = container.closest('form');
+    const sync = () => this.syncOrderPartsFromItems(form, container);
+    row.addEventListener('item-row-change', sync);
+    row.querySelector('.remove-row').addEventListener('click', () => {
+      setTimeout(sync, 0);
+    });
+    container.appendChild(row);
+    sync();
+  },
+
+  buildStockableItemRow(data = {}, { rowClass = '' } = {}) {
     const row = document.createElement('div');
-    row.className = 'item-row';
+    row.className = `item-row stockable ${rowClass}`.trim();
     row.innerHTML = `
-      <input name="description" placeholder="Descrição" value="${this.escape(data.description || '')}">
+      <select name="product_id">${this.productOptions()}</select>
+      <input name="description" placeholder="Peça ou serviço avulso" value="${this.escape(data.description || '')}">
       <input name="quantity" type="number" step="0.01" min="0" placeholder="Qtd" value="${this.escape(data.quantity || 1)}">
       <input name="unit_price" type="number" step="0.01" min="0" placeholder="Valor" value="${this.escape(data.unit_price || '')}">
       <button type="button" class="mini-btn danger remove-row">X</button>
     `;
+    const select = row.querySelector('select[name="product_id"]');
+    const description = row.querySelector('input[name="description"]');
+    const unitPrice = row.querySelector('input[name="unit_price"]');
+    const quantity = row.querySelector('input[name="quantity"]');
+    select.value = data.product_id || '';
+    const emitChange = () => row.dispatchEvent(new CustomEvent('item-row-change', { bubbles: true }));
+    select.addEventListener('change', () => {
+      const product = this.state.products.find((item) => String(item.id) === String(select.value));
+      if (product) {
+        description.value = product.name;
+        unitPrice.value = product.price;
+      }
+      emitChange();
+    });
+    description.addEventListener('input', emitChange);
+    unitPrice.addEventListener('input', emitChange);
+    quantity.addEventListener('input', emitChange);
     row.querySelector('.remove-row').addEventListener('click', () => row.remove());
-    container.appendChild(row);
+    return row;
   },
 
   appendSaleItem(container, data = {}) {

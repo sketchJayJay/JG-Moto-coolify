@@ -66,6 +66,21 @@ async function getFullBudget(id) {
   return { ...budgetQuery.rows[0], items: itemsQuery.rows };
 }
 
+async function getFullServiceOrder(id) {
+  const orderQuery = await pool.query(
+    `SELECT so.*, c.name AS client_name, c.document AS client_document, c.phone AS client_phone, c.email AS client_email, c.address AS client_address,
+            m.brand, m.model, m.plate
+     FROM service_orders so
+     LEFT JOIN clients c ON c.id = so.client_id
+     LEFT JOIN motorcycles m ON m.id = so.motorcycle_id
+     WHERE so.id = $1`,
+    [id]
+  );
+  if (orderQuery.rowCount === 0) return null;
+  const itemsQuery = await pool.query('SELECT * FROM service_order_items WHERE order_id = $1 ORDER BY id ASC', [id]);
+  return { ...orderQuery.rows[0], items: itemsQuery.rows };
+}
+
 function sanitizeFiscalCertificate(row) {
   if (!row) {
     return {
@@ -500,9 +515,9 @@ app.post('/api/budgets', authRequired, async (req, res) => {
     );
     for (const item of normalizedItems) {
       await client.query(
-        `INSERT INTO budget_items (budget_id, description, quantity, unit_price, total)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [insertBudget.rows[0].id, item.description, item.quantity, toMoney(item.unit_price), toMoney(item.total)]
+        `INSERT INTO budget_items (budget_id, product_id, description, quantity, unit_price, total)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [insertBudget.rows[0].id, item.product_id, item.description, item.quantity, toMoney(item.unit_price), toMoney(item.total)]
       );
     }
     await client.query('COMMIT');
@@ -529,9 +544,9 @@ app.put('/api/budgets/:id', authRequired, async (req, res) => {
     await client.query('DELETE FROM budget_items WHERE budget_id = $1', [req.params.id]);
     for (const item of normalizedItems) {
       await client.query(
-        `INSERT INTO budget_items (budget_id, description, quantity, unit_price, total)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [req.params.id, item.description, item.quantity, toMoney(item.unit_price), toMoney(item.total)]
+        `INSERT INTO budget_items (budget_id, product_id, description, quantity, unit_price, total)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [req.params.id, item.product_id, item.description, item.quantity, toMoney(item.unit_price), toMoney(item.total)]
       );
     }
     await client.query('COMMIT');
@@ -577,9 +592,16 @@ app.post('/api/budgets/:id/convert-service-order', authRequired, async (req, res
         'Convertida automaticamente do orçamento.'
       ]
     );
+    for (const item of (budget.items || [])) {
+      await client.query(
+        `INSERT INTO service_order_items (order_id, product_id, description, quantity, unit_price, total)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [order.rows[0].id, item.product_id || null, item.description, item.quantity, toMoney(item.unit_price), toMoney(item.total)]
+      );
+    }
     await client.query(`UPDATE budgets SET status = 'Convertido em OS' WHERE id = $1`, [budget.id]);
     await client.query('COMMIT');
-    res.json(order.rows[0]);
+    res.json(await getFullServiceOrder(order.rows[0].id));
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -590,39 +612,85 @@ app.post('/api/budgets/:id/convert-service-order', authRequired, async (req, res
 
 app.get('/api/service-orders', authRequired, async (_req, res) => {
   const result = await pool.query(
-    `SELECT so.*, c.name AS client_name, m.brand, m.model, m.plate
+    `SELECT so.*, c.name AS client_name, c.document AS client_document, c.phone AS client_phone, c.email AS client_email, c.address AS client_address,
+            m.brand, m.model, m.plate
      FROM service_orders so
      LEFT JOIN clients c ON c.id = so.client_id
      LEFT JOIN motorcycles m ON m.id = so.motorcycle_id
      ORDER BY so.id DESC`
   );
-  res.json(result.rows);
+  const items = await pool.query('SELECT * FROM service_order_items ORDER BY id ASC');
+  const byOrder = items.rows.reduce((acc, item) => {
+    acc[item.order_id] = acc[item.order_id] || [];
+    acc[item.order_id].push(item);
+    return acc;
+  }, {});
+  res.json(result.rows.map((row) => ({ ...row, items: byOrder[row.id] || [] })));
 });
 
 app.post('/api/service-orders', authRequired, async (req, res) => {
-  const { client_id, motorcycle_id, budget_id, service_date, status, complaint, diagnosis, services_performed, labor_price, parts_total, notes } = req.body || {};
-  const number = await nextNumber('service_orders', 'OS');
-  const total = Number(labor_price || 0) + Number(parts_total || 0);
-  const result = await pool.query(
-    `INSERT INTO service_orders
-     (number, client_id, motorcycle_id, budget_id, service_date, status, complaint, diagnosis, services_performed, labor_price, parts_total, total, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-     RETURNING *`,
-    [number, client_id || null, motorcycle_id || null, budget_id || null, service_date || today(), status || 'Aberta', complaint || '', diagnosis || '', services_performed || '', toMoney(labor_price), toMoney(parts_total), toMoney(total), notes || '']
-  );
-  res.json(result.rows[0]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { client_id, motorcycle_id, budget_id, service_date, status, complaint, diagnosis, services_performed, labor_price, parts_total, notes, items } = req.body || {};
+    const normalizedItems = normalizeItems(items);
+    const partsTotal = normalizedItems.reduce((sum, item) => sum + item.total, 0);
+    const number = await nextNumber('service_orders', 'OS');
+    const total = Number(labor_price || 0) + Number(partsTotal || parts_total || 0);
+    const result = await client.query(
+      `INSERT INTO service_orders
+       (number, client_id, motorcycle_id, budget_id, service_date, status, complaint, diagnosis, services_performed, labor_price, parts_total, total, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       RETURNING *`,
+      [number, client_id || null, motorcycle_id || null, budget_id || null, service_date || today(), status || 'Aberta', complaint || '', diagnosis || '', services_performed || '', toMoney(labor_price), toMoney(partsTotal), toMoney(total), notes || '']
+    );
+    for (const item of normalizedItems) {
+      await client.query(
+        `INSERT INTO service_order_items (order_id, product_id, description, quantity, unit_price, total)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [result.rows[0].id, item.product_id, item.description, item.quantity, toMoney(item.unit_price), toMoney(item.total)]
+      );
+    }
+    await client.query('COMMIT');
+    res.json(await getFullServiceOrder(result.rows[0].id));
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 });
 
 app.put('/api/service-orders/:id', authRequired, async (req, res) => {
-  const { client_id, motorcycle_id, budget_id, service_date, status, complaint, diagnosis, services_performed, labor_price, parts_total, notes } = req.body || {};
-  const total = Number(labor_price || 0) + Number(parts_total || 0);
-  const result = await pool.query(
-    `UPDATE service_orders
-     SET client_id=$1, motorcycle_id=$2, budget_id=$3, service_date=$4, status=$5, complaint=$6, diagnosis=$7, services_performed=$8, labor_price=$9, parts_total=$10, total=$11, notes=$12
-     WHERE id=$13 RETURNING *`,
-    [client_id || null, motorcycle_id || null, budget_id || null, service_date || today(), status || 'Aberta', complaint || '', diagnosis || '', services_performed || '', toMoney(labor_price), toMoney(parts_total), toMoney(total), notes || '', req.params.id]
-  );
-  res.json(result.rows[0]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { client_id, motorcycle_id, budget_id, service_date, status, complaint, diagnosis, services_performed, labor_price, parts_total, notes, items } = req.body || {};
+    const normalizedItems = normalizeItems(items);
+    const partsTotal = normalizedItems.reduce((sum, item) => sum + item.total, 0);
+    const total = Number(labor_price || 0) + Number(partsTotal || parts_total || 0);
+    await client.query(
+      `UPDATE service_orders
+       SET client_id=$1, motorcycle_id=$2, budget_id=$3, service_date=$4, status=$5, complaint=$6, diagnosis=$7, services_performed=$8, labor_price=$9, parts_total=$10, total=$11, notes=$12
+       WHERE id=$13`,
+      [client_id || null, motorcycle_id || null, budget_id || null, service_date || today(), status || 'Aberta', complaint || '', diagnosis || '', services_performed || '', toMoney(labor_price), toMoney(partsTotal), toMoney(total), notes || '', req.params.id]
+    );
+    await client.query('DELETE FROM service_order_items WHERE order_id = $1', [req.params.id]);
+    for (const item of normalizedItems) {
+      await client.query(
+        `INSERT INTO service_order_items (order_id, product_id, description, quantity, unit_price, total)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [req.params.id, item.product_id, item.description, item.quantity, toMoney(item.unit_price), toMoney(item.total)]
+      );
+    }
+    await client.query('COMMIT');
+    res.json(await getFullServiceOrder(req.params.id));
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 });
 
 app.delete('/api/service-orders/:id', authRequired, async (req, res) => {
@@ -927,7 +995,7 @@ app.post('/api/fiscal-documents/:id/status', authRequired, async (req, res) => {
 });
 
 app.get('/api/backup/export', authRequired, async (_req, res) => {
-  const tables = ['company_settings', 'users', 'clients', 'motorcycles', 'products', 'budgets', 'budget_items', 'service_orders', 'sales', 'sale_items', 'receipts', 'finance_entries', 'fiscal_documents'];
+  const tables = ['company_settings', 'users', 'clients', 'motorcycles', 'products', 'budgets', 'budget_items', 'service_orders', 'service_order_items', 'sales', 'sale_items', 'receipts', 'finance_entries', 'fiscal_documents'];
   const payload = {};
   for (const table of tables) {
     const result = await pool.query(`SELECT * FROM ${table} ORDER BY id ASC`);
@@ -942,11 +1010,11 @@ app.post('/api/backup/import', authRequired, async (req, res) => {
     return res.status(400).json({ message: 'Backup inválido.' });
   }
 
-  const restoreOrder = ['company_settings', 'users', 'clients', 'motorcycles', 'products', 'budgets', 'budget_items', 'service_orders', 'sales', 'sale_items', 'receipts', 'finance_entries', 'fiscal_documents'];
+  const restoreOrder = ['company_settings', 'users', 'clients', 'motorcycles', 'products', 'budgets', 'budget_items', 'service_orders', 'service_order_items', 'sales', 'sale_items', 'receipts', 'finance_entries', 'fiscal_documents'];
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('TRUNCATE TABLE sale_items, sales, budget_items, budgets, service_orders, receipts, finance_entries, fiscal_documents, motorcycles, products, clients, users, company_settings RESTART IDENTITY CASCADE');
+    await client.query('TRUNCATE TABLE sale_items, sales, service_order_items, service_orders, budget_items, budgets, receipts, finance_entries, fiscal_documents, motorcycles, products, clients, users, company_settings RESTART IDENTITY CASCADE');
     for (const table of restoreOrder) {
       const rows = Array.isArray(payload[table]) ? payload[table] : [];
       for (const row of rows) {

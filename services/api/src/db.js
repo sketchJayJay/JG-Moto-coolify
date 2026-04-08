@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS service_orders (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS service_order_items (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER NOT NULL REFERENCES service_orders(id) ON DELETE CASCADE,
+  product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  description TEXT NOT NULL,
+  quantity NUMERIC(12,2) NOT NULL DEFAULT 1,
+  unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+  total NUMERIC(12,2) NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS sales (
   id SERIAL PRIMARY KEY,
   number TEXT NOT NULL UNIQUE,
@@ -219,6 +229,16 @@ async function bootstrap() {
   await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS pdf_url TEXT DEFAULT ''`);
   await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS provider_response TEXT DEFAULT ''`);
   await pool.query(`ALTER TABLE fiscal_documents ADD COLUMN IF NOT EXISTS emitted_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE budget_items ADD COLUMN IF NOT EXISTS product_id INTEGER REFERENCES products(id) ON DELETE SET NULL`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS service_order_items (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES service_orders(id) ON DELETE CASCADE,
+    product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    description TEXT NOT NULL,
+    quantity NUMERIC(12,2) NOT NULL DEFAULT 1,
+    unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+    total NUMERIC(12,2) NOT NULL DEFAULT 0
+  )`);
 
   const companyCheck = await pool.query('SELECT id FROM company_settings LIMIT 1');
   if (companyCheck.rowCount === 0) {

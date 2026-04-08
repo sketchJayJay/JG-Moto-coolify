@@ -157,10 +157,11 @@ a { color: inherit; }
 .item-list { display: grid; gap: 0.6rem; }
 .item-row {
   display: grid;
-  grid-template-columns: 2fr 120px 140px 56px;
+  grid-template-columns: 1.25fr 1.8fr 110px 130px 56px;
   gap: 0.6rem;
 }
 .item-row.sale { grid-template-columns: 1.4fr 1.6fr 110px 130px 56px; }
+.item-row.stockable select { min-width: 0; }
 .table-like, .summary-box { display: grid; gap: 0.6rem; }
 .summary-box strong { display: block; margin-bottom: 0.25rem; }
 .button-stack { max-width: 320px; }
