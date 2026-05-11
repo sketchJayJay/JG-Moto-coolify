@@ -313,7 +313,8 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
   const serviceValue = Number(moneyNumber(payload.service_value).toFixed(2));
   const ambiente = normalizeNuvemAmbiente(process.env.NUVEMFISCAL_NFSE_AMBIENTE || process.env.NUVEMFISCAL_AMBIENTE || certRow.environment || 'producao');
   const municipalityCode = getServiceMunicipalityCode(payload);
-  const serviceCode = serviceCodeToNational(payload.service_code || process.env.NUVEMFISCAL_SERVICE_CODE || '140301');
+  const serviceCode = serviceCodeToNational(payload.service_code || process.env.NUVEMFISCAL_SERVICE_CODE || '140101');
+  const nbsCode = cleanDigits(payload.service_nbs || process.env.NUVEMFISCAL_NBS || process.env.NUVEMFISCAL_CODIGO_NBS || '120013100');
   const now = new Date().toISOString();
 
   const toma = {
@@ -343,6 +344,7 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
         },
         cServ: {
           cTribNac: serviceCode,
+          cNBS: nbsCode,
           CNAE: cleanDigits(process.env.NUVEMFISCAL_CNAE || '4543900'),
           xDescServ: String(payload.service_description || '').trim(),
         },
@@ -1242,7 +1244,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'tottrib-2026-05-11-v4-botao-fixo',
+      build_fix: 'nfse-2026-05-11-v5-cnbs',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),

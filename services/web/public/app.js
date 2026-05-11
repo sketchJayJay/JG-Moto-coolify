@@ -673,7 +673,7 @@ const App = {
       <div class="grid">
         <article class="card glow">
           <div class="card-head"><h3>Diagnóstico Nuvem Fiscal</h3></div>
-          <p class="muted">Versão fiscal: tottrib-v4. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
+          <p class="muted">Versão fiscal: nfse-v5-cnbs. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
           <div class="actions">
             <button type="button" class="primary-btn test-nuvem-fiscal-btn" id="testNuvemFiscalTopBtn">Testar Nuvem Fiscal</button>
           </div>
