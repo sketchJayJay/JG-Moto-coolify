@@ -183,7 +183,277 @@ async function markFiscalDocumentStatus(id, fields = {}) {
   return result.rows[0];
 }
 
+
+function cleanDigits(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function moneyNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const normalized = String(value || '')
+    .replace(/\s/g, '')
+    .replace(/R\$/gi, '')
+    .replace(/\./g, '')
+    .replace(',', '.');
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function serviceCodeToNational(value = '') {
+  const digits = cleanDigits(value);
+  if (digits.length >= 6) return digits.slice(0, 6);
+  return digits.padEnd(6, '0');
+}
+
+function normalizeNuvemAmbiente(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['sandbox', 'homologacao', 'homologação', 'teste'].includes(normalized)) return 'homologacao';
+  return 'producao';
+}
+
+function nuvemApiBaseUrl() {
+  const explicit = process.env.NUVEMFISCAL_BASE_URL || process.env.NUVEMFISCAL_API_BASE_URL;
+  if (explicit) return explicit.replace(/\/$/, '');
+  const env = String(process.env.NUVEMFISCAL_AMBIENTE || process.env.NUVEMFISCAL_API_ENV || 'producao').toLowerCase();
+  return env === 'sandbox' || env === 'homologacao' || env === 'homologação'
+    ? 'https://api.sandbox.nuvemfiscal.com.br'
+    : 'https://api.nuvemfiscal.com.br';
+}
+
+let nuvemTokenCache = { token: '', expiresAt: 0, scope: '' };
+
+async function getNuvemFiscalToken(scope = 'nfse') {
+  const clientId = process.env.NUVEMFISCAL_CLIENT_ID || process.env.NUVEMFISCAL_CLIENTID;
+  const clientSecret = process.env.NUVEMFISCAL_CLIENT_SECRET || process.env.NUVEMFISCAL_CLIENTSECRET;
+  if (!clientId || !clientSecret) {
+    const error = new Error('Credenciais da Nuvem Fiscal não configuradas. Defina NUVEMFISCAL_CLIENT_ID e NUVEMFISCAL_CLIENT_SECRET no Coolify.');
+    error.statusCode = 501;
+    throw error;
+  }
+
+  const now = Date.now();
+  if (nuvemTokenCache.token && nuvemTokenCache.scope === scope && nuvemTokenCache.expiresAt > now + 60_000) {
+    return nuvemTokenCache.token;
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope,
+  });
+
+  const response = await axios.post('https://auth.nuvemfiscal.com.br/oauth/token', body.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if (response.status < 200 || response.status >= 300 || !response.data?.access_token) {
+    const msg = extractProviderMessage(response.data) || `Falha ao autenticar na Nuvem Fiscal (${response.status}).`;
+    const error = new Error(msg);
+    error.statusCode = response.status || 500;
+    error.providerResponse = response.data;
+    throw error;
+  }
+
+  nuvemTokenCache = {
+    token: response.data.access_token,
+    scope,
+    expiresAt: now + (Number(response.data.expires_in || 3600) * 1000),
+  };
+  return nuvemTokenCache.token;
+}
+
+function extractProviderMessage(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return data.trim();
+  const candidates = [data.message, data.mensagem, data.error_description, data.error?.message, data.error?.descricao, data.error?.code, data.descricao];
+  const found = candidates.find((item) => String(item || '').trim());
+  if (found) return String(found).trim();
+  const errors = data.errors || data.erros || data.error?.errors || data.mensagens;
+  if (Array.isArray(errors) && errors.length) {
+    return errors
+      .map((err) => [err.codigo || err.code, err.descricao || err.description || err.message, err.correcao || err.correction].filter(Boolean).join(' - '))
+      .filter(Boolean)
+      .join(' | ');
+  }
+  return '';
+}
+
+function mapNuvemFiscalStatus(data = {}) {
+  const raw = String(data.status || data.situacao || data.estado || '').toLowerCase();
+  if (raw.includes('autoriz') || raw === 'concluido' || raw === 'processado') return 'Autorizada';
+  if (raw.includes('cancel')) return 'Cancelada';
+  if (raw.includes('negad') || raw.includes('rejeit') || raw.includes('erro')) return 'Rejeitada';
+  if (raw.includes('process') || raw.includes('pendente') || raw.includes('aguard')) return 'Enviada';
+  return raw ? data.status : 'Enviada';
+}
+
+function extractNuvemFields(data = {}) {
+  const nfse = data.nfse || data.NFSe || data;
+  return {
+    status: mapNuvemFiscalStatus(data),
+    nfse_number: data.numero || data.numero_nfse || data.nfse_number || nfse.numero || nfse.nNFSe || '',
+    access_key: data.chave || data.chave_acesso || data.codigo_verificacao || data.access_key || nfse.chave || nfse.chave_acesso || '',
+    protocol: data.protocolo || data.id || data.id_nuvem || data.idNuvem || '',
+    xml_content: data.xml || data.xml_content || '',
+    pdf_url: data.pdf || data.pdf_url || '',
+    emitted_at: data.emitida_em || data.data_emissao || data.created_at || new Date().toISOString(),
+  };
+}
+
+function getServiceMunicipalityCode(payload = {}) {
+  return cleanDigits(payload.service_city_code || process.env.NUVEMFISCAL_MUNICIPIO_CODIGO || process.env.NUVEMFISCAL_CITY_CODE || '3143906');
+}
+
+function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
+  const document = cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || certRow.document_number || process.env.COMPANY_CNPJ || '40193367000193');
+  const customerDocument = cleanDigits(payload.customer_document);
+  const serviceValue = Number(moneyNumber(payload.service_value).toFixed(2));
+  const ambiente = normalizeNuvemAmbiente(process.env.NUVEMFISCAL_NFSE_AMBIENTE || process.env.NUVEMFISCAL_AMBIENTE || certRow.environment || 'producao');
+  const municipalityCode = getServiceMunicipalityCode(payload);
+  const serviceCode = serviceCodeToNational(payload.service_code || process.env.NUVEMFISCAL_SERVICE_CODE || '140301');
+  const now = new Date().toISOString();
+
+  const toma = {
+    xNome: String(payload.customer_name || '').trim(),
+  };
+  if (customerDocument.length === 14) toma.CNPJ = customerDocument;
+  else if (customerDocument.length === 11) toma.CPF = customerDocument;
+  else toma.NIF = customerDocument || '00000000000';
+  if (payload.customer_email) toma.email = String(payload.customer_email).trim();
+
+  return {
+    provedor: process.env.NUVEMFISCAL_PROVEDOR || 'nacional',
+    ambiente,
+    referencia: `jg-nfse-${docRow.id}`.slice(0, 50),
+    infDPS: {
+      tpAmb: ambiente === 'producao' ? 1 : 2,
+      dhEmi: now,
+      verAplic: 'JG MOTOS V2',
+      dCompet: payload.service_date || today(),
+      prest: {
+        CNPJ: document,
+      },
+      toma,
+      serv: {
+        locPrest: {
+          cLocPrestacao: municipalityCode,
+        },
+        cServ: {
+          cTribNac: serviceCode,
+          CNAE: cleanDigits(process.env.NUVEMFISCAL_CNAE || '4543900'),
+          xDescServ: String(payload.service_description || '').trim(),
+        },
+      },
+      valores: {
+        vServPrest: {
+          vServ: serviceValue,
+        },
+        trib: {
+          tribMun: {
+            tribISSQN: Number(process.env.NUVEMFISCAL_TRIB_ISSQN || 1),
+            tpRetISSQN: Number(process.env.NUVEMFISCAL_RETENCAO_ISSQN || 1),
+            cLocIncid: municipalityCode,
+          },
+        },
+      },
+    },
+  };
+}
+
+async function emitFiscalDocumentWithNuvem(docRow, certRow) {
+  const payload = safeJsonParse(docRow.notes, {});
+  const missing = validateFiscalPayload(payload);
+  if (missing.length) {
+    const error = new Error(`Preencha antes de emitir: ${missing.join(', ')}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const token = await getNuvemFiscalToken(process.env.NUVEMFISCAL_SCOPE || 'nfse');
+  const requestPayload = buildNuvemFiscalDpsPayload(docRow, payload, certRow || {});
+  const url = `${nuvemApiBaseUrl()}${process.env.NUVEMFISCAL_NFSE_EMIT_PATH || '/nfse/dps'}`;
+
+  const response = await axios.post(url, requestPayload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    timeout: 60000,
+    validateStatus: () => true,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+  });
+
+  const parsed = typeof response.data === 'string' ? safeJsonParse(response.data, { raw: response.data }) : (response.data || {});
+  const providerRecord = {
+    provider: 'nuvem_fiscal',
+    status_code: response.status,
+    request_payload: requestPayload,
+    response: parsed,
+  };
+
+  if (response.status < 200 || response.status >= 300) {
+    const msg = extractProviderMessage(parsed) || `Falha ao emitir NFS-e pela Nuvem Fiscal (${response.status}).`;
+    const error = new Error(msg);
+    error.statusCode = response.status;
+    error.providerResponse = providerRecord;
+    throw error;
+  }
+
+  const fields = extractNuvemFields(parsed);
+  return {
+    ...fields,
+    provider_response: JSON.stringify(providerRecord),
+    emitted_at: fields.status === 'Autorizada' ? (fields.emitted_at || new Date().toISOString()) : null,
+  };
+}
+
+async function consultFiscalDocumentWithNuvem(docRow) {
+  const providerData = safeJsonParse(docRow.provider_response, {});
+  const nuvemId = providerData?.response?.id || providerData?.response?.id_nuvem || providerData?.response?.idNuvem || docRow.protocol;
+  if (!nuvemId) return docRow;
+
+  const token = await getNuvemFiscalToken(process.env.NUVEMFISCAL_SCOPE || 'nfse');
+  const url = `${nuvemApiBaseUrl()}/nfse/${encodeURIComponent(nuvemId)}`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  const parsed = typeof response.data === 'string' ? safeJsonParse(response.data, { raw: response.data }) : (response.data || {});
+  const providerRecord = {
+    provider: 'nuvem_fiscal',
+    status_code: response.status,
+    previous: providerData,
+    response: parsed,
+  };
+
+  if (response.status < 200 || response.status >= 300) {
+    const msg = extractProviderMessage(parsed) || `Falha ao consultar NFS-e pela Nuvem Fiscal (${response.status}).`;
+    const error = new Error(msg);
+    error.statusCode = response.status;
+    error.providerResponse = providerRecord;
+    throw error;
+  }
+
+  const fields = extractNuvemFields(parsed);
+  return markFiscalDocumentStatus(docRow.id, {
+    ...fields,
+    provider_response: JSON.stringify(providerRecord),
+    emitted_at: fields.status === 'Autorizada' ? (fields.emitted_at || new Date().toISOString()) : docRow.emitted_at,
+  });
+}
+
 async function emitFiscalDocument(docRow, certRow) {
+  if (process.env.NUVEMFISCAL_CLIENT_ID || process.env.NUVEMFISCAL_CLIENTID) {
+    return emitFiscalDocumentWithNuvem(docRow, certRow);
+  }
+
   const payload = safeJsonParse(docRow.notes, {});
   const missing = validateFiscalPayload(payload);
   if (missing.length) {
@@ -241,7 +511,7 @@ async function emitFiscalDocument(docRow, certRow) {
       : (response.data || {});
 
     if (response.status < 200 || response.status >= 300) {
-      const msg = parsed.message || parsed.error || `Falha ao emitir NFS-e (${response.status}).`;
+      const msg = extractProviderMessage(parsed) || `Falha ao emitir NFS-e (${response.status}).`;
       const error = new Error(msg);
       error.statusCode = response.status;
       error.providerResponse = parsed;
@@ -262,7 +532,7 @@ async function emitFiscalDocument(docRow, certRow) {
     const status = err.response?.status || err.statusCode || 500;
     const data = err.response?.data || err.providerResponse || null;
     const parsedData = typeof data === 'string' ? safeJsonParse(data, { raw: data }) : data;
-    const msg = parsedData?.message || parsedData?.error || err.message || `Falha ao emitir NFS-e (${status}).`;
+    const msg = extractProviderMessage(parsedData) || err.message || `Falha ao emitir NFS-e (${status}).`;
     const error = new Error(msg);
     error.statusCode = status;
     error.providerResponse = parsedData;
@@ -991,6 +1261,24 @@ app.post('/api/fiscal-documents/:id/emit', authRequired, async (req, res) => {
 app.post('/api/fiscal-documents/:id/status', authRequired, async (req, res) => {
   const docResult = await pool.query('SELECT * FROM fiscal_documents WHERE id = $1', [req.params.id]);
   if (docResult.rowCount === 0) return res.status(404).json({ message: 'Documento fiscal não encontrado.' });
+
+  if (process.env.NUVEMFISCAL_CLIENT_ID || process.env.NUVEMFISCAL_CLIENTID) {
+    try {
+      const updated = await consultFiscalDocumentWithNuvem(docResult.rows[0]);
+      return res.json({ document: updated || docResult.rows[0] });
+    } catch (error) {
+      const providerResponse = error.providerResponse ? JSON.stringify(error.providerResponse) : JSON.stringify({ message: error.message });
+      const row = await markFiscalDocumentStatus(req.params.id, {
+        status: error.statusCode && error.statusCode < 500 ? 'Rejeitada' : 'Erro na consulta',
+        provider_response: providerResponse,
+      });
+      return res.status(error.statusCode || 500).json({
+        message: error.message || 'Falha ao consultar a nota fiscal.',
+        document: row,
+      });
+    }
+  }
+
   res.json({ document: docResult.rows[0] });
 });
 
