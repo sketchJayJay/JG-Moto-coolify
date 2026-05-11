@@ -672,6 +672,13 @@ const App = {
     return `
       <div class="grid">
         <article class="card glow">
+          <div class="card-head"><h3>Diagnóstico Nuvem Fiscal</h3></div>
+          <p class="muted">Versão fiscal: tottrib-v4. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
+          <div class="actions">
+            <button type="button" class="primary-btn test-nuvem-fiscal-btn" id="testNuvemFiscalTopBtn">Testar Nuvem Fiscal</button>
+          </div>
+        </article>
+        <article class="card glow">
           <div class="card-head"><h3>Certificado digital A1</h3></div>
           <p class="muted">Suba o arquivo .pfx ou .p12, informe a senha e deixe a leitura do certificado pronta dentro do sistema. A emissão automática ainda depende da integração com a prefeitura ou provedor fiscal.</p>
           <div class="summary-box top-gap certificate-summary">
@@ -693,7 +700,7 @@ const App = {
             <div class="actions full">
               <button class="primary-btn">Salvar certificado</button>
               <button type="button" class="secondary-btn" id="testFiscalCertBtn">Testar leitura</button>
-              <button type="button" class="secondary-btn" id="testNuvemFiscalBtn">Testar Nuvem Fiscal</button>
+              <button type="button" class="secondary-btn test-nuvem-fiscal-btn" id="testNuvemFiscalBtn">Testar Nuvem Fiscal</button>
               <button type="button" class="ghost-btn danger" id="deleteFiscalCertBtn">Remover certificado</button>
             </div>
           </form>
@@ -1039,7 +1046,7 @@ const App = {
     if (section === 'fiscal') {
       const certForm = document.getElementById('fiscalCertForm');
       const testCertBtn = document.getElementById('testFiscalCertBtn');
-      const testNuvemFiscalBtn = document.getElementById('testNuvemFiscalBtn');
+      const testNuvemFiscalBtns = document.querySelectorAll('.test-nuvem-fiscal-btn');
       const deleteCertBtn = document.getElementById('deleteFiscalCertBtn');
 
       certForm?.addEventListener('submit', async (event) => {
@@ -1075,7 +1082,7 @@ const App = {
       });
 
 
-      testNuvemFiscalBtn?.addEventListener('click', async () => {
+      testNuvemFiscalBtns.forEach((btn) => btn.addEventListener('click', async () => {
         await this.safeAction(async () => {
           const resultBox = document.getElementById('fiscalEmitResult');
           if (resultBox) resultBox.value = 'Testando comunicação com a Nuvem Fiscal...';
@@ -1084,7 +1091,7 @@ const App = {
           if (resultBox) resultBox.value = formatted;
           this.toast(response.ok ? 'Nuvem Fiscal testada com sucesso.' : 'Teste da Nuvem Fiscal retornou erro.');
         });
-      });
+      }));
 
       deleteCertBtn?.addEventListener('click', async () => {
         if (!confirm('Remover o certificado salvo do sistema?')) return;

@@ -1242,7 +1242,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'tottrib-2026-05-11-v2',
+      build_fix: 'tottrib-2026-05-11-v4-botao-fixo',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
