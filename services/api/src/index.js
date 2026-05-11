@@ -357,6 +357,12 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
             tpRetISSQN: Number(process.env.NUVEMFISCAL_RETENCAO_ISSQN || 1),
             cLocIncid: municipalityCode,
           },
+          // Obrigatório no layout nacional da NFS-e.
+          // Para MEI, informe somente UMA opção dentro de totTrib.
+          // indTotTrib: 0 = não informar valor aproximado total de tributos.
+          totTrib: {
+            indTotTrib: 0,
+          },
         },
       },
     },
@@ -1236,6 +1242,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
+      build_fix: 'tottrib-2026-05-11-v2',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
