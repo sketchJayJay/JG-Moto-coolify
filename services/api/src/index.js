@@ -376,25 +376,44 @@ async function emitFiscalDocumentWithNuvem(docRow, certRow) {
   const requestPayload = buildNuvemFiscalDpsPayload(docRow, payload, certRow || {});
   const url = `${nuvemApiBaseUrl()}${process.env.NUVEMFISCAL_NFSE_EMIT_PATH || '/nfse/dps'}`;
 
-  const response = await axios.post(url, requestPayload, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    timeout: 60000,
-    validateStatus: () => true,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-  });
+  let response;
+  try {
+    response = await axios.post(url, requestPayload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      timeout: 60000,
+      validateStatus: () => true,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+  } catch (err) {
+    const providerRecord = {
+      provider: 'nuvem_fiscal',
+      transport_error: true,
+      request_url: url,
+      request_payload: requestPayload,
+      status_code: err.response?.status || null,
+      response: err.response?.data || null,
+      message: err.message || 'Erro de comunicação com a Nuvem Fiscal.',
+    };
+    const error = new Error(providerRecord.message);
+    error.statusCode = providerRecord.status_code || 502;
+    error.providerResponse = providerRecord;
+    throw error;
+  }
 
   const parsed = typeof response.data === 'string' ? safeJsonParse(response.data, { raw: response.data }) : (response.data || {});
   const providerRecord = {
     provider: 'nuvem_fiscal',
+    request_url: url,
     status_code: response.status,
     request_payload: requestPayload,
     response: parsed,
   };
+  console.log('[nuvem_fiscal_emit]', JSON.stringify({ status_code: response.status, request_url: url, response: parsed }));
 
   if (response.status < 200 || response.status >= 300) {
     const msg = extractProviderMessage(parsed) || `Falha ao emitir NFS-e pela Nuvem Fiscal (${response.status}).`;
@@ -1207,6 +1226,31 @@ app.delete('/api/fiscal/certificate', authRequired, async (_req, res) => {
   );
 
   res.json({ ok: true, message: 'Certificado removido do sistema.', certificate: sanitizeFiscalCertificate(result.rows[0]) });
+});
+
+
+app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
+  try {
+    const scope = process.env.NUVEMFISCAL_SCOPE || 'nfse';
+    const token = await getNuvemFiscalToken(scope);
+    res.json({
+      ok: true,
+      provider: 'nuvem_fiscal',
+      base_url: nuvemApiBaseUrl(),
+      scope,
+      company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
+      token_obtido: Boolean(token),
+      token_preview: token ? `${token.slice(0, 8)}...${token.slice(-6)}` : '',
+      message: 'Credenciais OAuth da Nuvem Fiscal funcionando. Agora o próximo teste é a emissão da NFS-e.',
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      ok: false,
+      provider: 'nuvem_fiscal',
+      message: error.message || 'Falha ao testar Nuvem Fiscal.',
+      provider_response: error.providerResponse || null,
+    });
+  }
 });
 
 app.get('/api/fiscal-documents', authRequired, async (_req, res) => {

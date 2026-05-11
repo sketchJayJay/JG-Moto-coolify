@@ -73,7 +73,10 @@ const App = {
     const isJson = response.headers.get('content-type')?.includes('application/json');
     const data = isJson ? await response.json() : await response.text();
     if (!response.ok) {
-      throw new Error(data?.message || 'Falha na requisição.');
+      const error = new Error(data?.message || 'Falha na requisição.');
+      error.status = response.status;
+      error.data = data;
+      throw error;
     }
     return data;
   },
@@ -690,6 +693,7 @@ const App = {
             <div class="actions full">
               <button class="primary-btn">Salvar certificado</button>
               <button type="button" class="secondary-btn" id="testFiscalCertBtn">Testar leitura</button>
+              <button type="button" class="secondary-btn" id="testNuvemFiscalBtn">Testar Nuvem Fiscal</button>
               <button type="button" class="ghost-btn danger" id="deleteFiscalCertBtn">Remover certificado</button>
             </div>
           </form>
@@ -1122,10 +1126,18 @@ const App = {
       document.getElementById('emitFiscalBtn')?.addEventListener('click', async () => {
         await this.safeAction(async () => {
           const saved = await this.saveCurrentFiscalDraft(form);
-          const response = await this.emitFiscalDocument(saved.id);
-          await this.loadAll();
-          this.renderFiscalEmitResult(response.document);
-          this.toast(response.message || 'Nota fiscal enviada.');
+          try {
+            const response = await this.emitFiscalDocument(saved.id);
+            await this.loadAll();
+            this.renderFiscalEmitResult(response.document);
+            this.toast(response.message || 'Nota fiscal enviada.');
+          } catch (error) {
+            if (error.data?.document) {
+              this.renderFiscalEmitResult(error.data.document);
+              await this.loadAll();
+            }
+            throw error;
+          }
         });
       });
 
