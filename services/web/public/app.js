@@ -1039,6 +1039,7 @@ const App = {
     if (section === 'fiscal') {
       const certForm = document.getElementById('fiscalCertForm');
       const testCertBtn = document.getElementById('testFiscalCertBtn');
+      const testNuvemFiscalBtn = document.getElementById('testNuvemFiscalBtn');
       const deleteCertBtn = document.getElementById('deleteFiscalCertBtn');
 
       certForm?.addEventListener('submit', async (event) => {
@@ -1070,6 +1071,18 @@ const App = {
           this.state.fiscalCertificate = response.certificate;
           await this.loadAll();
           this.toast(response.message || 'Certificado testado com sucesso.');
+        });
+      });
+
+
+      testNuvemFiscalBtn?.addEventListener('click', async () => {
+        await this.safeAction(async () => {
+          const resultBox = document.getElementById('fiscalEmitResult');
+          if (resultBox) resultBox.value = 'Testando comunicação com a Nuvem Fiscal...';
+          const response = await this.api('/fiscal/nuvemfiscal/test');
+          const formatted = this.tryPrettyJson(response);
+          if (resultBox) resultBox.value = formatted;
+          this.toast(response.ok ? 'Nuvem Fiscal testada com sucesso.' : 'Teste da Nuvem Fiscal retornou erro.');
         });
       });
 
