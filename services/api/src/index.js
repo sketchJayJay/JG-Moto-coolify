@@ -439,9 +439,26 @@ async function emitFiscalDocumentWithNuvem(docRow, certRow) {
   };
 }
 
+function getNuvemFiscalIdFromDocument(docRow = {}) {
+  const providerData = safeJsonParse(docRow.provider_response, {});
+  const candidates = [
+    docRow.protocol,
+    providerData?.response?.id,
+    providerData?.response?.id_nuvem,
+    providerData?.response?.idNuvem,
+    providerData?.response?.nfse?.id,
+    providerData?.response?.NFSe?.id,
+    providerData?.previous?.response?.id,
+    providerData?.previous?.response?.id_nuvem,
+    providerData?.previous?.response?.idNuvem,
+  ];
+  const found = candidates.find((value) => String(value || '').trim());
+  return found ? String(found).trim() : '';
+}
+
 async function consultFiscalDocumentWithNuvem(docRow) {
   const providerData = safeJsonParse(docRow.provider_response, {});
-  const nuvemId = providerData?.response?.id || providerData?.response?.id_nuvem || providerData?.response?.idNuvem || docRow.protocol;
+  const nuvemId = getNuvemFiscalIdFromDocument(docRow);
   if (!nuvemId) return docRow;
 
   const token = await getNuvemFiscalToken(process.env.NUVEMFISCAL_SCOPE || 'nfse');
@@ -473,6 +490,102 @@ async function consultFiscalDocumentWithNuvem(docRow) {
     ...fields,
     provider_response: JSON.stringify(providerRecord),
     emitted_at: fields.status === 'Autorizada' ? (fields.emitted_at || new Date().toISOString()) : docRow.emitted_at,
+  });
+}
+
+
+async function cancelFiscalDocumentWithNuvem(docRow, options = {}) {
+  const nuvemId = getNuvemFiscalIdFromDocument(docRow);
+  if (!nuvemId) {
+    const error = new Error('Esta nota não tem ID/protocolo da Nuvem Fiscal para cancelar oficialmente. Se ela foi rejeitada, use Excluir apenas para limpar a fila.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const status = String(docRow.status || '').toLowerCase();
+  if (status.includes('rejeit')) {
+    const error = new Error('Nota rejeitada não foi autorizada, então não existe cancelamento oficial para enviar. Use Excluir para limpar a pré-nota.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (status.includes('cancel')) {
+    const error = new Error('Esta nota já está marcada como cancelada.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const motivo = String(options.motivo || options.reason || process.env.NUVEMFISCAL_CANCEL_MOTIVO || 'Cancelamento solicitado pelo prestador.').trim();
+  if (!motivo) {
+    const error = new Error('Informe o motivo do cancelamento.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const requestPayload = { motivo: motivo.slice(0, 255) };
+  const codigo = String(options.codigo || process.env.NUVEMFISCAL_CANCEL_CODIGO || '').trim();
+  if (codigo) requestPayload.codigo = codigo;
+
+  const token = await getNuvemFiscalToken(process.env.NUVEMFISCAL_SCOPE || 'nfse');
+  const url = `${nuvemApiBaseUrl()}/nfse/${encodeURIComponent(nuvemId)}/cancelamento`;
+  const previous = safeJsonParse(docRow.provider_response, {});
+
+  let response;
+  try {
+    response = await axios.post(url, requestPayload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      timeout: 60000,
+      validateStatus: () => true,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+  } catch (err) {
+    const providerRecord = {
+      provider: 'nuvem_fiscal',
+      operation: 'cancelamento',
+      transport_error: true,
+      request_url: url,
+      request_payload: requestPayload,
+      status_code: err.response?.status || null,
+      previous,
+      response: err.response?.data || null,
+      message: err.message || 'Erro de comunicação com a Nuvem Fiscal ao cancelar.',
+    };
+    const error = new Error(providerRecord.message);
+    error.statusCode = providerRecord.status_code || 502;
+    error.providerResponse = providerRecord;
+    throw error;
+  }
+
+  const parsed = typeof response.data === 'string' ? safeJsonParse(response.data, { raw: response.data }) : (response.data || {});
+  const providerRecord = {
+    provider: 'nuvem_fiscal',
+    operation: 'cancelamento',
+    request_url: url,
+    status_code: response.status,
+    request_payload: requestPayload,
+    previous,
+    response: parsed,
+  };
+  console.log('[nuvem_fiscal_cancel]', JSON.stringify({ status_code: response.status, request_url: url, response: parsed }));
+
+  if (response.status < 200 || response.status >= 300) {
+    const msg = extractProviderMessage(parsed) || `Falha ao cancelar NFS-e pela Nuvem Fiscal (${response.status}).`;
+    const error = new Error(msg);
+    error.statusCode = response.status;
+    error.providerResponse = providerRecord;
+    throw error;
+  }
+
+  const mappedStatus = String(mapNuvemFiscalStatus(parsed) || '').toLowerCase();
+  const statusLabel = mappedStatus.includes('cancel') ? 'Cancelada' : 'Cancelamento solicitado';
+  return markFiscalDocumentStatus(docRow.id, {
+    status: statusLabel,
+    provider_response: JSON.stringify(providerRecord),
+    emitted_at: docRow.emitted_at,
   });
 }
 
@@ -1244,7 +1357,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'nfse-2026-05-11-v5-cnbs',
+      build_fix: 'nfse-2026-05-11-v7-excluir-fix',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
@@ -1306,6 +1419,35 @@ app.post('/api/fiscal-documents/:id/emit', authRequired, async (req, res) => {
     });
     res.status(error.statusCode || 500).json({
       message: error.message || 'Falha ao emitir a nota fiscal.',
+      document: row,
+    });
+  }
+});
+
+
+app.post('/api/fiscal-documents/:id/cancel', authRequired, async (req, res) => {
+  const docResult = await pool.query('SELECT * FROM fiscal_documents WHERE id = $1', [req.params.id]);
+  if (docResult.rowCount === 0) return res.status(404).json({ message: 'Documento fiscal não encontrado.' });
+
+  if (!(process.env.NUVEMFISCAL_CLIENT_ID || process.env.NUVEMFISCAL_CLIENTID)) {
+    return res.status(501).json({ message: 'Cancelamento automático só está disponível pela integração Nuvem Fiscal.' });
+  }
+
+  try {
+    const row = await cancelFiscalDocumentWithNuvem(docResult.rows[0], req.body || {});
+    res.json({
+      message: 'Pedido de cancelamento enviado para a Nuvem Fiscal.',
+      document: row || docResult.rows[0],
+    });
+  } catch (error) {
+    const current = docResult.rows[0];
+    const providerResponse = error.providerResponse ? JSON.stringify(error.providerResponse) : (current.provider_response || JSON.stringify({ message: error.message }));
+    const row = await markFiscalDocumentStatus(req.params.id, {
+      status: error.statusCode && error.statusCode < 500 ? current.status : 'Erro no cancelamento',
+      provider_response: providerResponse,
+    });
+    res.status(error.statusCode || 500).json({
+      message: error.message || 'Falha ao cancelar a nota fiscal.',
       document: row,
     });
   }

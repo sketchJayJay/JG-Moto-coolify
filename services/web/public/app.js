@@ -673,7 +673,7 @@ const App = {
       <div class="grid">
         <article class="card glow">
           <div class="card-head"><h3>Diagnóstico Nuvem Fiscal</h3></div>
-          <p class="muted">Versão fiscal: nfse-v5-cnbs. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
+          <p class="muted">Versão fiscal: nfse-v7-excluir-fix. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
           <div class="actions">
             <button type="button" class="primary-btn test-nuvem-fiscal-btn" id="testNuvemFiscalTopBtn">Testar Nuvem Fiscal</button>
           </div>
@@ -753,6 +753,9 @@ const App = {
                 const details = this.parseFiscalNotes(item);
                 const title = details.customer_name || details.service_description || item.doc_type;
                 const sub = [details.service_date ? this.date(details.service_date) : null, details.service_value ? this.money(details.service_value) : null, details.service_code || null].filter(Boolean).join(' • ');
+                const fiscalStatus = String(item.status || '').toLowerCase();
+                const hasOfficialId = Boolean(item.protocol || item.nfse_number || item.access_key);
+                const canCancel = hasOfficialId && !fiscalStatus.includes('cancel') && !fiscalStatus.includes('rejeit') && !fiscalStatus.includes('erro');
                 return `
                   <div class="entity-card fiscal-card">
                     <div>
@@ -764,6 +767,7 @@ const App = {
                       <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
                       <button class="mini-btn secondary" data-action="emit-fiscal" data-id="${item.id}">Emitir</button>
                       <button class="mini-btn" data-action="status-fiscal" data-id="${item.id}">Status</button>
+                      ${canCancel ? `<button class="mini-btn danger" data-action="cancel-fiscal" data-id="${item.id}">Cancelar NF</button>` : ''}
                       <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>
                     </div>
                   </div>
@@ -1202,6 +1206,22 @@ const App = {
             this.toast('Status atualizado.');
           });
         },
+        'cancel-fiscal': async (id) => {
+          const item = this.state.fiscal.find((entry) => String(entry.id) === String(id));
+          if (!item) return;
+          const confirmText = `Cancelar oficialmente a NFS-e ${item.nfse_number || item.protocol || ''}?
+
+Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da lista.`;
+          if (!confirm(confirmText)) return;
+          const motivo = prompt('Motivo do cancelamento', 'Cancelamento solicitado pelo prestador.');
+          if (!motivo) return;
+          await this.safeAction(async () => {
+            const response = await this.cancelFiscalDocument(id, motivo);
+            await this.loadAll();
+            this.renderFiscalEmitResult(response.document);
+            this.toast(response.message || 'Cancelamento enviado.');
+          });
+        },
         'delete-fiscal': (id) => this.safeDelete(`/fiscal-documents/${id}`, 'Pré-nota excluída.'),
       });
     }
@@ -1243,12 +1263,37 @@ const App = {
   },
 
   bindListActions(actions) {
-    document.getElementById('view').addEventListener('click', async (event) => {
+    const view = document.getElementById('view');
+    if (!view) return;
+
+    // Mantém apenas UM listener ativo por tela. Antes, cada reload/render adicionava
+    // outro listener e o botão Excluir pedia confirmação várias vezes.
+    view._jgListActions = actions;
+
+    if (view._jgListActionHandler) {
+      view.removeEventListener('click', view._jgListActionHandler);
+    }
+
+    view._jgListActionHandler = async (event) => {
       const button = event.target.closest('[data-action]');
-      if (!button) return;
-      const action = actions[button.dataset.action];
-      if (action) await action(button.dataset.id);
-    });
+      if (!button || !view.contains(button)) return;
+
+      const action = view._jgListActions?.[button.dataset.action];
+      if (!action) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        await action(button.dataset.id, button);
+      } finally {
+        if (button.isConnected) button.disabled = false;
+      }
+    };
+
+    view.addEventListener('click', view._jgListActionHandler);
   },
 
   bindSearchableSelects(root = document) {
@@ -1385,6 +1430,13 @@ const App = {
 
   async fetchFiscalStatus(id) {
     return this.api(`/fiscal-documents/${id}/status`, { method: 'POST' });
+  },
+
+  async cancelFiscalDocument(id, motivo) {
+    return this.api(`/fiscal-documents/${id}/cancel`, {
+      method: 'POST',
+      body: { motivo },
+    });
   },
 
   renderFiscalEmitResult(item) {
