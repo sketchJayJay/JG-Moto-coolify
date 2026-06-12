@@ -364,13 +364,12 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
     },
   };
 
-  // Para ME/EPP no Simples Nacional, a NFS-e Nacional rejeita indTotTrib.
-  // Só envia totTrib se for explicitamente habilitado no Coolify.
-  if (String(process.env.NUVEMFISCAL_INFORMAR_TOTTRIB || '').toLowerCase() === 'true') {
-    dpsPayload.infDPS.valores.trib.totTrib = {
-      indTotTrib: 0,
-    };
-  }
+  // ME/EPP no Simples Nacional exige o grupo totTrib,
+  // mas rejeita o indicador indTotTrib. Por isso usamos pTotTribSN.
+  // Deixe 0 se a empresa não informa percentual aproximado dos tributos.
+  dpsPayload.infDPS.valores.trib.totTrib = {
+    pTotTribSN: Number(process.env.NUVEMFISCAL_P_TOT_TRIB_SN || 0),
+  };
 
   return dpsPayload;
 }
@@ -1509,7 +1508,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'nfse-2026-06-12-v13-me-epp-sem-tottrib',
+      build_fix: 'nfse-2026-06-12-v14-me-epp-ptottribsn',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
