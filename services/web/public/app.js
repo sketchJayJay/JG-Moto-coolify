@@ -757,7 +757,8 @@ const App = {
                 const sub = [details.service_date ? this.date(details.service_date) : null, details.service_value ? this.money(details.service_value) : null, details.service_code || null].filter(Boolean).join(' • ');
                 const fiscalStatus = String(item.status || '').toLowerCase();
                 const hasOfficialId = Boolean(item.protocol || item.nfse_number || item.access_key);
-                const canCancel = hasOfficialId && !fiscalStatus.includes('cancel') && !fiscalStatus.includes('rejeit') && !fiscalStatus.includes('erro');
+                const isAuthorizedFiscal = hasOfficialId && (fiscalStatus.includes('autoriz') || fiscalStatus.includes('emitida')) && !fiscalStatus.includes('manual') && !fiscalStatus.includes('rejeit') && !fiscalStatus.includes('erro');
+                const canCancel = isAuthorizedFiscal && !fiscalStatus.includes('cancel');
                 return `
                   <div class="entity-card fiscal-card">
                     <div>
@@ -769,8 +770,8 @@ const App = {
                       <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
                       <button class="mini-btn secondary" data-action="emit-fiscal" data-id="${item.id}">Emitir</button>
                       <button class="mini-btn" data-action="status-fiscal" data-id="${item.id}">Status</button>
-                      ${hasOfficialId ? `<button type="button" class="mini-btn secondary" data-fiscal-direct="download-fiscal-pdf" data-id="${item.id}">PDF</button>` : ''}
-                      ${hasOfficialId ? `<button type="button" class="mini-btn secondary" data-fiscal-direct="download-fiscal-xml" data-id="${item.id}">XML</button>` : ''}
+                      ${isAuthorizedFiscal ? `<button type="button" class="mini-btn secondary" data-fiscal-direct="download-fiscal-pdf" data-id="${item.id}">PDF</button>` : ''}
+                      ${isAuthorizedFiscal ? `<button type="button" class="mini-btn secondary" data-fiscal-direct="download-fiscal-xml" data-id="${item.id}">XML</button>` : ''}
                       <button type="button" class="mini-btn" data-fiscal-direct="whatsapp-fiscal" data-id="${item.id}">WhatsApp</button>
                       ${canCancel ? `<button class="mini-btn danger" data-action="cancel-fiscal" data-id="${item.id}">Cancelar NF</button>` : ''}
                       <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>

@@ -580,7 +580,7 @@ async function getFiscalDocumentArtifact(docRow, type = 'pdf') {
 
   const nuvemId = getNuvemFiscalIdFromDocument(docRow);
   if (!nuvemId) {
-    const error = new Error('Esta NFS-e ainda não possui ID/protocolo oficial para baixar arquivo. Consulte o status depois da autorização.');
+    const error = new Error('Arquivo não disponível. A NFS-e precisa estar Autorizada na Nuvem Fiscal e com número/chave/protocolo salvo. Clique em Status depois da emissão. Pré-nota rejeitada ou enviada manualmente não possui PDF/XML oficial pelo sistema.');
     error.statusCode = 400;
     throw error;
   }
@@ -1505,7 +1505,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'nfse-2026-05-11-v11-botoes-diretos',
+      build_fix: 'nfse-2026-05-11-v12-pdfxml-so-autorizada',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
