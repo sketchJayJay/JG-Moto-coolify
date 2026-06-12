@@ -313,8 +313,8 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
   const serviceValue = Number(moneyNumber(payload.service_value).toFixed(2));
   const ambiente = normalizeNuvemAmbiente(process.env.NUVEMFISCAL_NFSE_AMBIENTE || process.env.NUVEMFISCAL_AMBIENTE || certRow.environment || 'producao');
   const municipalityCode = getServiceMunicipalityCode(payload);
-  const serviceCode = serviceCodeToNational(payload.service_code || process.env.NUVEMFISCAL_SERVICE_CODE || '140101');
-  const nbsCode = cleanDigits(payload.service_nbs || process.env.NUVEMFISCAL_NBS || process.env.NUVEMFISCAL_CODIGO_NBS || '120013100');
+  const serviceCode = serviceCodeToNational(process.env.NUVEMFISCAL_SERVICE_CODE || payload.service_code || '140101');
+  const nbsCode = cleanDigits(process.env.NUVEMFISCAL_NBS || process.env.NUVEMFISCAL_CODIGO_NBS || payload.service_nbs || '120013110');
   const now = new Date().toISOString();
 
   const toma = {
@@ -325,7 +325,7 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
   else toma.NIF = customerDocument || '00000000000';
   if (payload.customer_email) toma.email = String(payload.customer_email).trim();
 
-  return {
+  const dpsPayload = {
     provedor: process.env.NUVEMFISCAL_PROVEDOR || 'nacional',
     ambiente,
     referencia: `jg-nfse-${docRow.id}`.slice(0, 50),
@@ -359,16 +359,20 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
             tpRetISSQN: Number(process.env.NUVEMFISCAL_RETENCAO_ISSQN || 1),
             cLocIncid: municipalityCode,
           },
-          // Obrigatório no layout nacional da NFS-e.
-          // Para MEI, informe somente UMA opção dentro de totTrib.
-          // indTotTrib: 0 = não informar valor aproximado total de tributos.
-          totTrib: {
-            indTotTrib: 0,
-          },
         },
       },
     },
   };
+
+  // Para ME/EPP no Simples Nacional, a NFS-e Nacional rejeita indTotTrib.
+  // Só envia totTrib se for explicitamente habilitado no Coolify.
+  if (String(process.env.NUVEMFISCAL_INFORMAR_TOTTRIB || '').toLowerCase() === 'true') {
+    dpsPayload.infDPS.valores.trib.totTrib = {
+      indTotTrib: 0,
+    };
+  }
+
+  return dpsPayload;
 }
 
 async function emitFiscalDocumentWithNuvem(docRow, certRow) {
@@ -1505,7 +1509,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'nfse-2026-05-11-v12-pdfxml-so-autorizada',
+      build_fix: 'nfse-2026-06-12-v13-me-epp-sem-tottrib',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
