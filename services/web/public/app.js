@@ -673,7 +673,7 @@ const App = {
       <div class="grid">
         <article class="card glow">
           <div class="card-head"><h3>Diagnóstico Nuvem Fiscal</h3></div>
-          <p class="muted">Versão fiscal: nfse-v7-excluir-fix. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
+          <p class="muted">Versão fiscal: nfse-v8-pdf-xml-whatsapp. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
           <div class="actions">
             <button type="button" class="primary-btn test-nuvem-fiscal-btn" id="testNuvemFiscalTopBtn">Testar Nuvem Fiscal</button>
           </div>
@@ -726,6 +726,7 @@ const App = {
               <div class="field"><label>Tomador / cliente</label><input name="customer_name" placeholder="Nome ou razão social"></div>
               <div class="field"><label>CPF/CNPJ do cliente</label><input name="customer_document" placeholder="CPF ou CNPJ"></div>
               <div class="field"><label>E-mail do cliente</label><input name="customer_email" type="email" placeholder="email@cliente.com"></div>
+              <div class="field"><label>WhatsApp do cliente</label><input name="customer_phone" placeholder="(32) 99999-9999"></div>
               <div class="field"><label>Status</label><select name="status"><option>Pendente de emissão</option><option>Pronta para emitir</option><option>Emitida no portal</option></select></div>
               <div class="field full"><label>Endereço do cliente</label><textarea name="customer_address" rows="2" placeholder="Endereço completo do tomador"></textarea></div>
               <div class="field full"><label>Observações para a nota</label><textarea name="notes" rows="3" placeholder="Informações extras, garantia, forma de cobrança, etc."></textarea></div>
@@ -767,6 +768,9 @@ const App = {
                       <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
                       <button class="mini-btn secondary" data-action="emit-fiscal" data-id="${item.id}">Emitir</button>
                       <button class="mini-btn" data-action="status-fiscal" data-id="${item.id}">Status</button>
+                      ${hasOfficialId ? `<button class="mini-btn secondary" data-action="download-fiscal-pdf" data-id="${item.id}">PDF</button>` : ''}
+                      ${hasOfficialId ? `<button class="mini-btn secondary" data-action="download-fiscal-xml" data-id="${item.id}">XML</button>` : ''}
+                      ${hasOfficialId ? `<button class="mini-btn" data-action="whatsapp-fiscal" data-id="${item.id}">WhatsApp</button>` : ''}
                       ${canCancel ? `<button class="mini-btn danger" data-action="cancel-fiscal" data-id="${item.id}">Cancelar NF</button>` : ''}
                       <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>
                     </div>
@@ -1367,6 +1371,7 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
       `CPF/CNPJ: ${payload.customer_document || '-'}`,
       `Endereço: ${payload.customer_address || '-'}`,
       `E-mail: ${payload.customer_email || '-'}`,
+      `WhatsApp: ${payload.customer_phone || '-'}`,
       `Data do serviço: ${payload.service_date ? this.date(payload.service_date) : '-'}`,
       `Município da prestação: ${payload.service_city || '-'}`,
       `Código do serviço: ${payload.service_code || '-'}`,
@@ -1439,6 +1444,61 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
     });
   },
 
+  async downloadFiscalArtifact(id, type) {
+    const response = await fetch(`/api/fiscal-documents/${id}/${type}`, {
+      headers: {
+        ...(this.state.token ? { Authorization: `Bearer ${this.state.token}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      const isJson = response.headers.get('content-type')?.includes('application/json');
+      const data = isJson ? await response.json() : await response.text();
+      throw new Error(data?.message || `Não foi possível baixar o ${String(type).toUpperCase()}.`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match?.[1] || `nfse-${id}.${type}`;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this.toast(`${String(type).toUpperCase()} baixado.`);
+  },
+
+  fiscalWhatsAppMessage(item) {
+    const details = this.parseFiscalNotes(item);
+    const parts = [
+      `Olá, ${details.customer_name || 'cliente'}!`,
+      '',
+      'Segue a nota fiscal referente ao serviço realizado na JG MOTOS.',
+      item.nfse_number ? `NFS-e nº: ${item.nfse_number}` : '',
+      details.service_value ? `Valor: ${this.money(details.service_value)}` : '',
+      '',
+      'Estou enviando o PDF/XML da nota em anexo.',
+      'Obrigado pela preferência!'
+    ].filter((line) => line !== '');
+    return parts.join('\n');
+  },
+
+  async sendFiscalWhatsApp(id) {
+    const item = this.state.fiscal.find((entry) => String(entry.id) === String(id));
+    if (!item) throw new Error('Pré-nota não encontrada.');
+    const details = this.parseFiscalNotes(item);
+    const rawPhone = details.customer_phone || '';
+    let phone = String(rawPhone).replace(/\D/g, '');
+    if (!phone) phone = String(prompt('Digite o WhatsApp do cliente com DDD', '') || '').replace(/\D/g, '');
+    if (phone && phone.length <= 11 && !phone.startsWith('55')) phone = `55${phone}`;
+    const text = encodeURIComponent(this.fiscalWhatsAppMessage(item));
+    const url = phone ? `https://wa.me/${phone}?text=${text}` : `https://wa.me/?text=${text}`;
+    window.open(url, '_blank');
+    this.toast('WhatsApp aberto. Baixe o PDF/XML e anexe na conversa.');
+  },
+
   renderFiscalEmitResult(item) {
     const box = document.getElementById('fiscalEmitResult');
     if (!box) return;
@@ -1451,6 +1511,7 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
     form.elements.customer_name.value = client.name || '';
     form.elements.customer_document.value = client.document || '';
     form.elements.customer_email.value = client.email || '';
+    if (form.elements.customer_phone) form.elements.customer_phone.value = client.phone || '';
     form.elements.customer_address.value = client.address || '';
   },
 

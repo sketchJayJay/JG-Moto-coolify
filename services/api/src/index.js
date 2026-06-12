@@ -494,6 +494,154 @@ async function consultFiscalDocumentWithNuvem(docRow) {
 }
 
 
+function findDeepValue(source, keys = []) {
+  if (!source || typeof source !== 'object') return '';
+  const wanted = new Set(keys.map((key) => String(key).toLowerCase()));
+  const stack = [source];
+  const seen = new Set();
+  while (stack.length) {
+    const item = stack.shift();
+    if (!item || typeof item !== 'object' || seen.has(item)) continue;
+    seen.add(item);
+    for (const [key, value] of Object.entries(item)) {
+      const normalizedKey = String(key).toLowerCase();
+      if (wanted.has(normalizedKey) && value) return value;
+      if (value && typeof value === 'object') stack.push(value);
+    }
+  }
+  return '';
+}
+
+function getNuvemFiscalArtifactPath(type, nuvemId) {
+  const encoded = encodeURIComponent(nuvemId);
+  if (type === 'pdf') {
+    const custom = process.env.NUVEMFISCAL_NFSE_PDF_PATH || '';
+    return custom ? custom.replace('{id}', encoded) : `/nfse/${encoded}/pdf`;
+  }
+  const custom = process.env.NUVEMFISCAL_NFSE_XML_PATH || '';
+  return custom ? custom.replace('{id}', encoded) : `/nfse/${encoded}/xml`;
+}
+
+async function fetchHttpArtifact(url, accept) {
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: 60000,
+    validateStatus: () => true,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    headers: { Accept: accept || '*/*' },
+  });
+  return response;
+}
+
+function bufferToPossibleJson(buffer, contentType = '') {
+  const text = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer || '');
+  if (!contentType.includes('json') && !text.trim().startsWith('{') && !text.trim().startsWith('[')) return null;
+  return safeJsonParse(text, null);
+}
+
+async function getFiscalDocumentArtifact(docRow, type = 'pdf') {
+  const lowerType = String(type || '').toLowerCase() === 'xml' ? 'xml' : 'pdf';
+  const providerData = safeJsonParse(docRow.provider_response, {});
+
+  if (lowerType === 'xml' && String(docRow.xml_content || '').trim()) {
+    return {
+      buffer: Buffer.from(String(docRow.xml_content), 'utf8'),
+      contentType: 'application/xml; charset=utf-8',
+      filename: `nfse-${docRow.nfse_number || docRow.id}.xml`,
+    };
+  }
+
+  const keys = lowerType === 'pdf'
+    ? ['pdf_url', 'pdfUrl', 'pdf', 'danfse', 'danfse_url', 'url_pdf', 'link_pdf']
+    : ['xml_url', 'xmlUrl', 'xml', 'url_xml', 'link_xml'];
+  const candidate = lowerType === 'pdf' ? (docRow.pdf_url || findDeepValue(providerData, keys)) : findDeepValue(providerData, keys);
+
+  if (candidate && typeof candidate === 'string') {
+    const value = candidate.trim();
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      const external = await fetchHttpArtifact(value, lowerType === 'pdf' ? 'application/pdf' : 'application/xml,text/xml,*/*');
+      if (external.status >= 200 && external.status < 300) {
+        return {
+          buffer: Buffer.from(external.data),
+          contentType: external.headers['content-type'] || (lowerType === 'pdf' ? 'application/pdf' : 'application/xml; charset=utf-8'),
+          filename: `nfse-${docRow.nfse_number || docRow.id}.${lowerType}`,
+        };
+      }
+    }
+    if (lowerType === 'xml' && value.trim().startsWith('<')) {
+      return {
+        buffer: Buffer.from(value, 'utf8'),
+        contentType: 'application/xml; charset=utf-8',
+        filename: `nfse-${docRow.nfse_number || docRow.id}.xml`,
+      };
+    }
+  }
+
+  const nuvemId = getNuvemFiscalIdFromDocument(docRow);
+  if (!nuvemId) {
+    const error = new Error('Esta NFS-e ainda não possui ID/protocolo oficial para baixar arquivo. Consulte o status depois da autorização.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const token = await getNuvemFiscalToken(process.env.NUVEMFISCAL_SCOPE || 'nfse');
+  const url = `${nuvemApiBaseUrl()}${getNuvemFiscalArtifactPath(lowerType, nuvemId)}`;
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: lowerType === 'pdf' ? 'application/pdf,application/json,*/*' : 'application/xml,text/xml,application/json,*/*',
+    },
+    timeout: 60000,
+    validateStatus: () => true,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+  });
+
+  const contentType = String(response.headers['content-type'] || '');
+  const possibleJson = bufferToPossibleJson(response.data, contentType);
+  if (possibleJson) {
+    if (response.status < 200 || response.status >= 300) {
+      const msg = extractProviderMessage(possibleJson) || `Falha ao baixar ${lowerType.toUpperCase()} da NFS-e pela Nuvem Fiscal (${response.status}).`;
+      const error = new Error(msg);
+      error.statusCode = response.status;
+      error.providerResponse = { provider: 'nuvem_fiscal', operation: `download_${lowerType}`, request_url: url, status_code: response.status, response: possibleJson };
+      throw error;
+    }
+    const nested = findDeepValue(possibleJson, keys);
+    if (nested && typeof nested === 'string') {
+      if (nested.startsWith('http://') || nested.startsWith('https://')) {
+        const external = await fetchHttpArtifact(nested, lowerType === 'pdf' ? 'application/pdf' : 'application/xml,text/xml,*/*');
+        if (external.status >= 200 && external.status < 300) {
+          return {
+            buffer: Buffer.from(external.data),
+            contentType: external.headers['content-type'] || (lowerType === 'pdf' ? 'application/pdf' : 'application/xml; charset=utf-8'),
+            filename: `nfse-${docRow.nfse_number || docRow.id}.${lowerType}`,
+          };
+        }
+      }
+      if (lowerType === 'xml' && nested.trim().startsWith('<')) {
+        return { buffer: Buffer.from(nested, 'utf8'), contentType: 'application/xml; charset=utf-8', filename: `nfse-${docRow.nfse_number || docRow.id}.xml` };
+      }
+    }
+  }
+
+  if (response.status < 200 || response.status >= 300) {
+    const error = new Error(`Falha ao baixar ${lowerType.toUpperCase()} da NFS-e pela Nuvem Fiscal (${response.status}).`);
+    error.statusCode = response.status;
+    error.providerResponse = { provider: 'nuvem_fiscal', operation: `download_${lowerType}`, request_url: url, status_code: response.status };
+    throw error;
+  }
+
+  return {
+    buffer: Buffer.from(response.data),
+    contentType: contentType || (lowerType === 'pdf' ? 'application/pdf' : 'application/xml; charset=utf-8'),
+    filename: `nfse-${docRow.nfse_number || docRow.id}.${lowerType}`,
+  };
+}
+
+
 async function cancelFiscalDocumentWithNuvem(docRow, options = {}) {
   const nuvemId = getNuvemFiscalIdFromDocument(docRow);
   if (!nuvemId) {
@@ -1357,7 +1505,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'nfse-2026-05-11-v7-excluir-fix',
+      build_fix: 'nfse-2026-05-11-v8-pdf-xml-whatsapp',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
@@ -1475,6 +1623,21 @@ app.post('/api/fiscal-documents/:id/status', authRequired, async (req, res) => {
   }
 
   res.json({ document: docResult.rows[0] });
+});
+
+
+app.get('/api/fiscal-documents/:id/:artifact(pdf|xml)', authRequired, async (req, res) => {
+  const docResult = await pool.query('SELECT * FROM fiscal_documents WHERE id = $1', [req.params.id]);
+  if (docResult.rowCount === 0) return res.status(404).json({ message: 'Documento fiscal não encontrado.' });
+  try {
+    const artifact = await getFiscalDocumentArtifact(docResult.rows[0], req.params.artifact);
+    res.setHeader('Content-Type', artifact.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${artifact.filename}"`);
+    return res.send(artifact.buffer);
+  } catch (error) {
+    const payload = error.providerResponse ? { message: error.message, provider_response: error.providerResponse } : { message: error.message || 'Falha ao baixar arquivo fiscal.' };
+    return res.status(error.statusCode || 500).json(payload);
+  }
 });
 
 app.get('/api/backup/export', authRequired, async (_req, res) => {
