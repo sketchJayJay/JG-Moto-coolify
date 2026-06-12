@@ -27,6 +27,7 @@ const App = {
   },
 
   async init() {
+    this.bindFiscalDirectActions();
     if (this.state.token) {
       try {
         await this.api('/auth/me');
@@ -673,7 +674,7 @@ const App = {
       <div class="grid">
         <article class="card glow">
           <div class="card-head"><h3>Diagnóstico Nuvem Fiscal</h3></div>
-          <p class="muted">Versão fiscal: nfse-v8-pdf-xml-whatsapp. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
+          <p class="muted">Versão fiscal: nfse-v11-botoes-diretos. Use este teste para confirmar se o Coolify está rodando a versão nova.</p>
           <div class="actions">
             <button type="button" class="primary-btn test-nuvem-fiscal-btn" id="testNuvemFiscalTopBtn">Testar Nuvem Fiscal</button>
           </div>
@@ -768,9 +769,9 @@ const App = {
                       <button class="mini-btn" data-action="copy-fiscal" data-id="${item.id}">Copiar</button>
                       <button class="mini-btn secondary" data-action="emit-fiscal" data-id="${item.id}">Emitir</button>
                       <button class="mini-btn" data-action="status-fiscal" data-id="${item.id}">Status</button>
-                      ${hasOfficialId ? `<button class="mini-btn secondary" data-action="download-fiscal-pdf" data-id="${item.id}">PDF</button>` : ''}
-                      ${hasOfficialId ? `<button class="mini-btn secondary" data-action="download-fiscal-xml" data-id="${item.id}">XML</button>` : ''}
-                      ${hasOfficialId ? `<button class="mini-btn" data-action="whatsapp-fiscal" data-id="${item.id}">WhatsApp</button>` : ''}
+                      ${hasOfficialId ? `<button type="button" class="mini-btn secondary" data-fiscal-direct="download-fiscal-pdf" data-id="${item.id}">PDF</button>` : ''}
+                      ${hasOfficialId ? `<button type="button" class="mini-btn secondary" data-fiscal-direct="download-fiscal-xml" data-id="${item.id}">XML</button>` : ''}
+                      <button type="button" class="mini-btn" data-fiscal-direct="whatsapp-fiscal" data-id="${item.id}">WhatsApp</button>
                       ${canCancel ? `<button class="mini-btn danger" data-action="cancel-fiscal" data-id="${item.id}">Cancelar NF</button>` : ''}
                       <button class="mini-btn danger" data-action="delete-fiscal" data-id="${item.id}">Excluir</button>
                     </div>
@@ -1210,6 +1211,15 @@ const App = {
             this.toast('Status atualizado.');
           });
         },
+        'download-fiscal-pdf': async (id) => {
+          await this.safeAction(async () => this.downloadFiscalArtifact(id, 'pdf'));
+        },
+        'download-fiscal-xml': async (id) => {
+          await this.safeAction(async () => this.downloadFiscalArtifact(id, 'xml'));
+        },
+        'whatsapp-fiscal': (id) => {
+          this.sendFiscalWhatsApp(id);
+        },
         'cancel-fiscal': async (id) => {
           const item = this.state.fiscal.find((entry) => String(entry.id) === String(id));
           if (!item) return;
@@ -1264,6 +1274,55 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
     }
 
     this.bindSearchableSelects(document.getElementById('view'));
+  },
+
+
+  bindFiscalDirectActions() {
+    if (this._fiscalDirectBound) return;
+    this._fiscalDirectBound = true;
+    document.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-fiscal-direct]');
+      if (!button) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+
+      const action = button.dataset.fiscalDirect;
+      const id = button.dataset.id;
+      if (!id) return;
+      if (button.disabled) return;
+      button.disabled = true;
+
+      try {
+        const box = document.getElementById('fiscalEmitResult');
+        if (box) {
+          const label = action.includes('pdf') ? 'PDF' : action.includes('xml') ? 'XML' : 'WhatsApp';
+          box.value = `Botão ${label} clicado. Processando...`;
+        }
+
+        if (action === 'download-fiscal-pdf') {
+          await this.downloadFiscalArtifact(id, 'pdf');
+          return;
+        }
+        if (action === 'download-fiscal-xml') {
+          await this.downloadFiscalArtifact(id, 'xml');
+          return;
+        }
+        if (action === 'whatsapp-fiscal') {
+          this.sendFiscalWhatsApp(id);
+          return;
+        }
+      } catch (error) {
+        const box = document.getElementById('fiscalEmitResult');
+        if (box) {
+          box.value = `Erro ao executar botão:\n\n${error.message || error}`;
+        }
+        this.toast(error.message || 'Falha ao executar ação.', 'error');
+      } finally {
+        if (button.isConnected) button.disabled = false;
+      }
+    }, true);
   },
 
   bindListActions(actions) {
@@ -1445,6 +1504,8 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
   },
 
   async downloadFiscalArtifact(id, type) {
+    const box = document.getElementById('fiscalEmitResult');
+    if (box) box.value = `Baixando ${String(type).toUpperCase()} da NFS-e...`;
     const response = await fetch(`/api/fiscal-documents/${id}/${type}`, {
       headers: {
         ...(this.state.token ? { Authorization: `Bearer ${this.state.token}` } : {}),
@@ -1467,6 +1528,7 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (box) box.value = `${String(type).toUpperCase()} baixado. Se o download não aparecer, confira a barra de downloads do navegador.`;
     this.toast(`${String(type).toUpperCase()} baixado.`);
   },
 
@@ -1485,18 +1547,39 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
     return parts.join('\n');
   },
 
-  async sendFiscalWhatsApp(id) {
+  sendFiscalWhatsApp(id) {
     const item = this.state.fiscal.find((entry) => String(entry.id) === String(id));
-    if (!item) throw new Error('Pré-nota não encontrada.');
+    if (!item) {
+      this.toast('Pré-nota não encontrada.', 'error');
+      return;
+    }
     const details = this.parseFiscalNotes(item);
-    const rawPhone = details.customer_phone || '';
+    const rawPhone = details.customer_phone || item.customer_phone || '';
     let phone = String(rawPhone).replace(/\D/g, '');
-    if (!phone) phone = String(prompt('Digite o WhatsApp do cliente com DDD', '') || '').replace(/\D/g, '');
-    if (phone && phone.length <= 11 && !phone.startsWith('55')) phone = `55${phone}`;
+    if (!phone) {
+      phone = String(prompt('Digite o WhatsApp do cliente com DDD. Exemplo: 32999999999', '') || '').replace(/\D/g, '');
+    }
+    if (!phone) {
+      this.toast('WhatsApp cancelado: número não informado.', 'error');
+      return;
+    }
+    if (phone.length <= 11 && !phone.startsWith('55')) phone = `55${phone}`;
     const text = encodeURIComponent(this.fiscalWhatsAppMessage(item));
-    const url = phone ? `https://wa.me/${phone}?text=${text}` : `https://wa.me/?text=${text}`;
-    window.open(url, '_blank');
-    this.toast('WhatsApp aberto. Baixe o PDF/XML e anexe na conversa.');
+    const url = `https://wa.me/${phone}?text=${text}`;
+
+    const box = document.getElementById('fiscalEmitResult');
+    if (box) {
+      box.value = `Abrindo WhatsApp...
+
+Número: ${phone}
+
+Caso não abra automaticamente, copie e cole este link no navegador:
+${url}`;
+    }
+
+    // No iPhone, window.open dentro de handler async pode ser bloqueado. location.href é mais confiável.
+    window.location.href = url;
+    this.toast('Abrindo WhatsApp. Baixe o PDF/XML e anexe na conversa.');
   },
 
   renderFiscalEmitResult(item) {
@@ -1896,4 +1979,5 @@ Isso envia o pedido para a Nuvem Fiscal/prefeitura. Não é apenas excluir da li
   },
 };
 
+window.App = App;
 window.addEventListener('DOMContentLoaded', () => App.init());
