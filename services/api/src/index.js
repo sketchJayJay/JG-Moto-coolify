@@ -328,7 +328,7 @@ function buildNuvemFiscalDpsPayload(docRow, payload = {}, certRow = {}) {
   const dpsPayload = {
     provedor: process.env.NUVEMFISCAL_PROVEDOR || 'nacional',
     ambiente,
-    referencia: `jg-nfse-${docRow.id}`.slice(0, 50),
+    referencia: `jg-nfse-${docRow.id}-${Date.now().toString(36)}`.slice(0, 50),
     infDPS: {
       tpAmb: ambiente === 'producao' ? 1 : 2,
       dhEmi: now,
@@ -1508,7 +1508,7 @@ app.get('/api/fiscal/nuvemfiscal/test', authRequired, async (_req, res) => {
     res.json({
       ok: true,
       provider: 'nuvem_fiscal',
-      build_fix: 'nfse-2026-06-12-v14-me-epp-ptottribsn',
+      build_fix: 'nfse-2026-06-12-v15-referencia-unica',
       base_url: nuvemApiBaseUrl(),
       scope,
       company_cnpj: cleanDigits(process.env.NUVEMFISCAL_COMPANY_CNPJ || process.env.COMPANY_CNPJ || '40193367000193'),
